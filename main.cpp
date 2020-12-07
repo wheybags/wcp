@@ -90,66 +90,70 @@ std::vector<uint8_t> buf;
 
 static int f(const char* fpath, const struct stat64* sb, int tflag, struct FTW* ftwbuf)
 {
-    std::string destPath = dest + (fpath + src.length() + 1);
+    std::string destPath = dest + (fpath + src.length());
 
     if (tflag == FTW_D)
     {
-        //printf("mkdir %s\n", destPath.c_str());
         recursive_mkdir(destPath.c_str());
     }
-
-    if (tflag == FTW_F)
+    else if (tflag == FTW_F)
     {
-        //printf("write file %s\n", destPath.c_str());
-
         buf.resize(sb->st_size);
         int readFd = open(fpath, O_RDONLY);
+        int wfd = open(destPath.c_str(), O_WRONLY | O_CREAT, sb->st_mode);
+
         release_assert(readFd > 0);
 
         {
-            off_t offset = 0;
+            off_t readOffset = 0;
+            off_t writeOffset = 0;
 
-            while (offset != sb->st_size)
+            while (writeOffset != sb->st_size)
             {
-                io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-                io_uring_prep_read(sqe, readFd, buf.data(), sb->st_size, offset);
+                io_uring_sqe* sqe = nullptr;
+                int submitted = 0;
 
-                release_assert(io_uring_submit(&ring) == 1);
+                if (readOffset < sb->st_size)
+                {
+                    sqe = io_uring_get_sqe(&ring);
+                    submitted++;
+                    io_uring_prep_read(sqe, readFd, buf.data(), sb->st_size - readOffset, readOffset);
+                    sqe->flags |= IOSQE_IO_LINK_BIT;
+                    sqe->user_data = 1;
+                }
 
-                io_uring_cqe *cqe = nullptr;
-                release_assert(io_uring_wait_cqe(&ring, &cqe) == 0);
-                release_assert(cqe->res >= 0);
-                offset += cqe->res;
-                io_uring_cqe_seen(&ring, cqe);
+                sqe = io_uring_get_sqe(&ring);
+                submitted++;
+                io_uring_prep_write(sqe, wfd, buf.data(), sb->st_size - writeOffset, writeOffset);
+                sqe->user_data = 2;
+
+                release_assert(io_uring_submit(&ring) == submitted);
+
+
+                for (int i = 0; i < submitted; i++)
+                {
+                    io_uring_cqe *cqe = nullptr;
+                    release_assert(io_uring_wait_cqe_nr(&ring, &cqe, 1) == 0);
+
+                    if (cqe->user_data == 1) // read op
+                    {
+                        release_assert(cqe->res > 0);
+                        readOffset += cqe->res;
+                    }
+                    else // write op
+                    {
+                        release_assert(cqe->res > 0 || cqe->res == -ECANCELED);
+
+                        if (cqe->res > 0)
+                            writeOffset += cqe->res;
+                    }
+
+                    io_uring_cqe_seen(&ring, cqe);
+                }
             }
         }
 
-        {
-            int wfd = open(destPath.c_str(), O_WRONLY | O_CREAT, sb->st_mode);
-            release_assert(wfd > 0);
-
-            off_t offset = 0;
-
-            while (offset != sb->st_size)
-            {
-                io_uring_sqe *sqe = io_uring_get_sqe(&ring);
-                io_uring_prep_write(sqe, wfd, buf.data(), sb->st_size, offset);
-                release_assert(io_uring_submit(&ring) == 1);
-
-                io_uring_cqe *cqe = nullptr;
-                release_assert(io_uring_wait_cqe(&ring, &cqe) == 0);
-
-                if (cqe->res < 0)
-                    puts(strerror(-cqe->res));
-
-                release_assert(cqe->res >= 0);
-                offset += cqe->res;
-                io_uring_cqe_seen(&ring, cqe);
-            }
-
-            close(wfd);
-        }
-
+        close(wfd);
         close(readFd);
     }
 
