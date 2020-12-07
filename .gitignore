@@ -1,2 +1,5 @@
 test_data
 test_dest
+build*
+cmake-build*
+.idea

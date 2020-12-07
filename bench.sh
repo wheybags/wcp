@@ -8,6 +8,14 @@ FILE_COUNT=2
 TEST_DATA="./test_data/$SIZE_MB""_$FILE_COUNT"
 TEST_DEST="./test_dest"
 
+build() {
+    mkdir -p build_test
+    cd build_test
+    cmake .. -DCMAKE_BUILD_TYPE=Release
+    make -j $(grep -c processor /proc/cpuinfo)
+    cd ..
+}
+
 generate_data() {
     local test_folder="$1"
     local size_in_mb="$2"
@@ -44,5 +52,8 @@ if [ ! -e "$TEST_DATA/done_tag" ]; then
     touch "$TEST_DATA/done_tag"
 fi
 
+build
+
 run_test "cp -r"
 run_test "rsync -r"
+run_test "./build_test/wcp"
