@@ -8,6 +8,7 @@
 #include <cstring>
 
 #define DEBUG_COPY_OPS 0
+#define DEBUG_FORCE_PARTIAL_READS 0
 
 
 #ifdef _MSC_VER
@@ -110,13 +111,14 @@ struct CopyData
         };
 
         CopyData* copyData;
+        __s32 resultOverride;
         Type type;
     };
 
     int jobsRunning = 0;
 
-    EventData readData {this, EventData::Type::Read};
-    EventData writeData {this, EventData::Type::Write};
+    EventData readData {this, 0, EventData::Type::Read};
+    EventData writeData {this, 0, EventData::Type::Write};
 
     CopyData(int sourceFd, int destFd, off_t size)
         : sourceFd(sourceFd)
@@ -150,11 +152,18 @@ struct CopyData
 
         io_uring_sqe* sqe = nullptr;
 
-        if (this->readOffset < this->size)
+        unsigned int bytesToRead = this->size - this->readOffset;
+#if DEBUG_FORCE_PARTIAL_READS
+        bytesToRead = rand() % (bytesToRead + 1);
+        bool readIsPartial = bytesToRead < this->size - this->readOffset;
+#endif
+
+        if (bytesToRead)
         {
             sqe = io_uring_get_sqe(&ring);
             this->jobsRunning++;
-            io_uring_prep_read(sqe, this->sourceFd, this->buffer, this->size - this->readOffset, this->readOffset);
+
+            io_uring_prep_read(sqe, this->sourceFd, this->buffer + this->readOffset, bytesToRead, this->readOffset);
             sqe->flags |= IOSQE_IO_LINK;
 
             static_assert(sizeof(sqe->user_data) == sizeof(void*), "");
@@ -165,7 +174,31 @@ struct CopyData
         {
             sqe = io_uring_get_sqe(&ring);
             this->jobsRunning++;
-            io_uring_prep_write(sqe, this->destFd, this->buffer, this->size - this->writeOffset, this->writeOffset);
+
+            auto prepWrite = [&]()
+            {
+                io_uring_prep_write(sqe,
+                                    this->destFd,
+                                    this->buffer + this->writeOffset,
+                                    this->size - this->writeOffset,
+                                    this->writeOffset);
+            };
+
+#if DEBUG_FORCE_PARTIAL_READS
+            if (readIsPartial)
+            {
+                // Normally if a read is short, the following write would be cancelled.
+                // To emulate this, we just send a nop event and override it's result code to -ECANCELLED.
+                io_uring_prep_nop(sqe);
+                this->writeData.resultOverride = -ECANCELED;
+            }
+            else
+            {
+                prepWrite();
+            }
+#else
+            prepWrite();
+#endif
             sqe->user_data = reinterpret_cast<__u64>(&this->writeData);
         }
 
@@ -176,33 +209,31 @@ struct CopyData
         }
     }
 
-    bool onCompletionEvent(io_uring_cqe* cqe)
+    bool onCompletionEvent(EventData::Type type, __s32 result)
     {
         this->jobsRunning--;
         debug_assert(jobsRunning >= 0);
 
-        EventData::Type type = reinterpret_cast<EventData*>(cqe->user_data)->type;
-
         if (type == EventData::Type::Read)
         {
 #if DEBUG_COPY_OPS
-            printf("RD %d->%d JR:%d RES: %d\n", this->sourceFd, this->destFd, this->jobsRunning, cqe->res);
+            printf("RD %d->%d JR:%d RES: %d\n", this->sourceFd, this->destFd, this->jobsRunning, result);
 #endif
 
-            if (cqe->res < 0)
-                puts(strerror(-cqe->res));
-            release_assert(cqe->res > 0);
-            this->readOffset += cqe->res;
+            if (result < 0)
+                puts(strerror(-result));
+            release_assert(result > 0);
+            this->readOffset += result;
         }
         else
         {
 #if DEBUG_COPY_OPS
-            printf("WT %d->%d JR:%d RES: %d\n", this->sourceFd, this->destFd, this->jobsRunning, cqe->res);
+            printf("WT %d->%d JR:%d RES: %d\n", this->sourceFd, this->destFd, this->jobsRunning, result);
 #endif
 
-            release_assert(cqe->res >= 0 || cqe->res == -ECANCELED);
-            if (cqe->res > 0)
-                this->writeOffset += cqe->res;
+            release_assert(result >= 0 || result == -ECANCELED);
+            if (result > 0)
+                this->writeOffset += result;
         }
 
         if (this->jobsRunning == 0 && this->writeOffset < this->size)
@@ -261,9 +292,14 @@ int main(int argc, char** argv)
         io_uring_cqe *cqe = nullptr;
         release_assert(io_uring_wait_cqe_nr(&ring, &cqe, 1) == 0);
 
-        CopyData* copyData = reinterpret_cast<CopyData::EventData*>(cqe->user_data)->copyData;
-        if (copyData->onCompletionEvent(cqe))
-            delete copyData;
+        auto* eventData = reinterpret_cast<CopyData::EventData*>(cqe->user_data);
+        __s32 result = cqe->res;
+        if (eventData->resultOverride)
+            result = eventData->resultOverride;
+        eventData->resultOverride = 0;
+
+        if (eventData->copyData->onCompletionEvent(eventData->type, result))
+            delete eventData->copyData;
 
         io_uring_cqe_seen(&ring, cqe);
     }
