@@ -9,6 +9,7 @@
 
 #define DEBUG_COPY_OPS 0
 #define DEBUG_FORCE_PARTIAL_READS 0
+#define DEBUG_FORCE_PARTIAL_WRITES 0
 
 
 #ifdef _MSC_VER
@@ -177,10 +178,15 @@ struct CopyData
 
             auto prepWrite = [&]()
             {
+                unsigned int bytesToWrite = this->size - this->writeOffset;
+#if DEBUG_FORCE_PARTIAL_WRITES
+                bytesToWrite = rand() % (bytesToWrite + 1);
+#endif
+
                 io_uring_prep_write(sqe,
                                     this->destFd,
                                     this->buffer + this->writeOffset,
-                                    this->size - this->writeOffset,
+                                    bytesToWrite,
                                     this->writeOffset);
             };
 
