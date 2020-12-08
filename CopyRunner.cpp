@@ -1,23 +1,19 @@
 #include "CopyRunner.hpp"
+#include "CopyQueue.hpp"
 #include "Assert.hpp"
 #include "Config.hpp"
 #include <unistd.h>
 #include <liburing.h>
 #include <cerrno>
 
-int CopyRunner::copiesRunning = 0;
-int CopyRunner::copiesPendingsubmit = 0;
 
-CopyRunner::CopyRunner(io_uring* ring, int sourceFd, int destFd, off_t size)
-        : ring(ring)
+CopyRunner::CopyRunner(CopyQueue* queue, int sourceFd, int destFd, off_t size)
+        : queue(queue)
         , sourceFd(sourceFd)
         , destFd(destFd)
         , size(size)
         , buffer(new uint8_t[size])
-{
-    copiesRunning++;
-    copiesPendingsubmit++;
-}
+{}
 
 CopyRunner::~CopyRunner()
 {
@@ -26,12 +22,12 @@ CopyRunner::~CopyRunner()
     delete[] buffer;
     close(sourceFd);
     close(destFd);
-
-    copiesRunning--;
 }
 
 void CopyRunner::addToBatch()
 {
+    std::scoped_lock lock(this->queue->ringMutex);
+
 #if DEBUG_COPY_OPS
     printf("START %d->%d\n", this->sourceFd, this->destFd);
 #endif
@@ -49,7 +45,7 @@ void CopyRunner::addToBatch()
 
     if (bytesToRead)
     {
-        sqe = io_uring_get_sqe(ring);
+        sqe = io_uring_get_sqe(&queue->ring);
         this->jobsRunning++;
 
         io_uring_prep_read(sqe, this->sourceFd, this->buffer + this->readOffset, bytesToRead, this->readOffset);
@@ -61,7 +57,7 @@ void CopyRunner::addToBatch()
 
     if (this->writeOffset < this->size || this->size == 0)
     {
-        sqe = io_uring_get_sqe(ring);
+        sqe = io_uring_get_sqe(&queue->ring);
         this->jobsRunning++;
 
         auto prepWrite = [&]()
@@ -96,11 +92,7 @@ void CopyRunner::addToBatch()
         sqe->user_data = reinterpret_cast<__u64>(&this->writeData);
     }
 
-    //if (copiesPendingsubmit == 10)
-    {
-        io_uring_submit(ring);
-        copiesPendingsubmit = 0;
-    }
+    io_uring_submit(&queue->ring);
 }
 
 bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)

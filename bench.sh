@@ -2,8 +2,13 @@
 
 set -euo pipefail
 
-SIZE_MB=512
-FILE_COUNT=20
+if [ "$#" -ne 2 ]; then
+    echo "Usage $0 <SIZE_MB> <FILE_COUNT>" >&2
+    exit 1
+fi
+
+SIZE_MB=$1
+FILE_COUNT=$2
 
 TEST_DATA="./test_data/$SIZE_MB""_$FILE_COUNT"
 TEST_DEST="./test_dest"
@@ -11,8 +16,8 @@ TEST_DEST="./test_dest"
 build() {
     mkdir -p build_test
     cd build_test
-    cmake .. -DCMAKE_BUILD_TYPE=Release
-    make -j "$(grep -c processor /proc/cpuinfo)"
+    chronic cmake .. -DCMAKE_BUILD_TYPE=Release
+    chronic make -j "$(grep -c processor /proc/cpuinfo)"
     cd ..
 }
 
@@ -41,14 +46,17 @@ run_test() {
 
     echo -n "testing $*... "
     /usr/bin/time -o /tmp/wcp_bench_ts_temp -f "%e" $@ "$TEST_DATA"/ "$TEST_DEST"/
+    echo "done"
 
     local seconds
-    local total_size
     local mibps
+    local filesps
     seconds=$(cat /tmp/wcp_bench_ts_temp)
-    total_size=$(du -s -BM "$TEST_DATA" | sed 's/M.*//')
-    mibps=$(echo "scale=2;($total_size)/$seconds" | bc)
-    echo "finished in $seconds""s, avg $mibps MiB/s"
+    mibps=$(echo "scale=2;($TOTAL_SIZE)/$seconds" | bc)
+    filesps=$(echo "scale=2;($TOTAL_FILE_COUNT)/$seconds" | bc)
+    echo "    finished in $seconds""s"
+    echo "    avg $mibps MiB/s"
+    echo "    avg $filesps files/s"
 }
 
 if [ ! -e "$TEST_DATA/done_tag" ]; then
@@ -58,10 +66,13 @@ if [ ! -e "$TEST_DATA/done_tag" ]; then
     touch "$TEST_DATA/done_tag"
 fi
 
+TOTAL_SIZE=$(du -s -BM "$TEST_DATA" | sed 's/M.*//')
+TOTAL_FILE_COUNT=$(find "$TEST_DATA" -type f | wc -l)
+
 build
 
 run_test "cp -r"
-run_test "rsync -r"
+run_test "rsync -r --inplace -W --no-compress"
 
 run_test "./build_test/wcp"
 diff -r "$TEST_DATA" "$TEST_DEST"

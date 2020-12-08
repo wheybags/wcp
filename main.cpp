@@ -7,6 +7,7 @@
 #include <liburing.h>
 #include "Assert.hpp"
 #include "CopyRunner.hpp"
+#include "CopyQueue.hpp"
 
 off_t getFileSize(int fd)
 {
@@ -46,11 +47,9 @@ static void recursive_mkdir(const char *dir) {
     mkdir(tmp, S_IRWXU);
 }
 
-
-io_uring ring = {};
-
-std::string src = "/home/wheybags/wcp/test_data/512_20";
-std::string dest = "/home/wheybags/wcp/test_dest";
+CopyQueue copyQueue;
+std::string src;
+std::string dest;
 
 static int f(const char* fpath, const struct stat64* sb, int tflag, struct FTW* ftwbuf)
 {
@@ -64,53 +63,35 @@ static int f(const char* fpath, const struct stat64* sb, int tflag, struct FTW* 
     {
         int sourceFd = open(fpath, O_RDONLY);
         int destFd = open(destPath.c_str(), O_WRONLY | O_CREAT, sb->st_mode);
-        CopyRunner* copy = new CopyRunner(&ring, sourceFd, destFd, sb->st_size);
-        copy->addToBatch();
+        copyQueue.addCopyJob(sourceFd, destFd, sb->st_size);
     }
 
     return 0;
 }
 
-
 int main(int argc, char** argv)
 {
-//    release_assert(argc == 3);
-//
-//    src = argv[1];
-//    dest = argv[2];
+    release_assert(argc == 3);
+    src = argv[1];
+    dest = argv[2];
 
-    release_assert(io_uring_queue_init(100, &ring, 0) == 0);
+    copyQueue.start();
 
-    nftw64(src.c_str(), f, 100, 0);
+    struct stat64 st = {};
+    stat64(src.c_str(), &st);
 
-
-//    int sourceFd = open("/home/wheybags/wcp/test_data/512_2/512/1", O_RDONLY);
-//    int destFd = open("/tmp/out", O_WRONLY | O_CREAT, 0777);
-//
-//    auto copy = new CopyData(sourceFd, destFd, getFileSize(sourceFd));
-//    copy->addToBatch();
-
-    if (CopyRunner::copiesPendingsubmit)
-        io_uring_submit(&ring);
-
-    while (CopyRunner::copiesRunning)
+    if (S_ISDIR(st.st_mode))
     {
-        io_uring_cqe *cqe = nullptr;
-        release_assert(io_uring_wait_cqe_nr(&ring, &cqe, 1) == 0);
-
-        auto* eventData = reinterpret_cast<CopyRunner::EventData*>(cqe->user_data);
-        __s32 result = cqe->res;
-        if (eventData->resultOverride)
-            result = eventData->resultOverride;
-        eventData->resultOverride = 0;
-
-        if (eventData->copyData->onCompletionEvent(eventData->type, result))
-            delete eventData->copyData;
-
-        io_uring_cqe_seen(&ring, cqe);
+        nftw64(src.c_str(), f, 100, 0);
+    }
+    else
+    {
+        int sourceFd = open(src.c_str(), O_RDONLY);
+        int destFd = open(dest.c_str(), O_WRONLY | O_CREAT, 0777);
+        copyQueue.addCopyJob(sourceFd, destFd, getFileSize(sourceFd));
     }
 
-    io_uring_queue_exit(&ring);
+    copyQueue.join();
 
     return 0;
 }

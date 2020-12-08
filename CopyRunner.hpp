@@ -2,8 +2,10 @@
 #include <cstdint>
 #include <sys/types.h>
 #include <asm/types.h>
+#include "CopyQueue.hpp"
 
-struct io_uring;
+
+class CopyQueue;
 
 class CopyRunner
 {
@@ -21,14 +23,14 @@ public:
         Type type;
     };
 
-    CopyRunner(io_uring* ring, int sourceFd, int destFd, off_t size);
+    CopyRunner(CopyQueue* queue, int sourceFd, int destFd, off_t size);
     ~CopyRunner();
 
     void addToBatch();
     bool onCompletionEvent(EventData::Type type, __s32 result);
 
 private:
-    io_uring* ring;
+    CopyQueue* queue;
     int sourceFd;
     int destFd;
     off_t size;
@@ -41,11 +43,5 @@ private:
 
     EventData readData {this, 0, EventData::Type::Read};
     EventData writeData {this, 0, EventData::Type::Write};
-
-public:
-    static int32_t copiesRunning;
-    static int32_t copiesPendingsubmit;
 };
-
-
 
