@@ -1,6 +1,7 @@
 #include <ftw.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <fcntl.h>
 #include <cstring>
 #include <string>
@@ -61,8 +62,12 @@ static int f(const char* fpath, const struct stat64* sb, int tflag, struct FTW* 
     }
     else if (tflag == FTW_F)
     {
+        // TODO: even though we've bumped the concurrent open files limit a lot, we should still probably
+        // try to make sure we don't exceed it.
         int sourceFd = open(fpath, O_RDONLY);
         int destFd = open(destPath.c_str(), O_WRONLY | O_CREAT, sb->st_mode);
+        release_assert(sourceFd > 0);
+        release_assert(destFd > 0);
         copyQueue.addCopyJob(sourceFd, destFd, sb->st_size);
     }
 
@@ -75,6 +80,16 @@ int main(int argc, char** argv)
     src = argv[1];
     dest = argv[2];
 
+    // Linux has stupidly low default limits for concurrently open files (1024 file descriptors).
+    // This is due to a bad api (select) that uses a bitset to represent a set of file descriptors.
+    // We just bump it up as far as we're allowed.
+    {
+        rlimit64 openFilesLimit = {};
+        getrlimit64(RLIMIT_NOFILE, &openFilesLimit);
+        openFilesLimit.rlim_cur = openFilesLimit.rlim_max;
+        setrlimit64(RLIMIT_NOFILE, &openFilesLimit);
+    }
+
     copyQueue.start();
 
     struct stat64 st = {};
@@ -82,7 +97,7 @@ int main(int argc, char** argv)
 
     if (S_ISDIR(st.st_mode))
     {
-        nftw64(src.c_str(), f, 100, 0);
+        nftw64(src.c_str(), f, 200, 0);
     }
     else
     {

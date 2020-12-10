@@ -14,12 +14,46 @@ CopyQueue::~CopyQueue()
 
 void CopyQueue::start()
 {
-    this->done = false;
+    release_assert(this->state == State::Idle);
+    this->state = State::Running;
+
+    this->submitThread = std::thread([&](){
+        while (true)
+        {
+            while (this->copiesPendingStartCount)
+            {
+                std::scoped_lock lock(this->copiesPendingStartMutex);
+
+                while(!this->copiesPendingStart.empty() &&
+                      // Rate limit to avoid overflowing the completion queue
+                      (COMPLETION_RING_SIZE -this->submissionsRunning) >= CopyRunner::MAX_JOBS_PER_RUNNER)
+                {
+                    this->copiesPendingStartCount--;
+                    this->copiesRunning++;
+
+                    this->copiesPendingStart.back()->addToBatch();
+                    this->copiesPendingStart.pop_back();
+                }
+            }
+
+            // TODO: avoid busy looping? Or maybe it's fine? Not really sure tbh.
+            // We want to busy loop here to avoid holding the lock when we can't do anything.
+            while (this->copiesPendingStartCount == 0)
+            {
+                // We want to check the state _first_, then recheck the copiesPendingStartCount count, to avoid a race condition.
+                if (this->state == State::AdditionComplete && this->copiesPendingStartCount == 0)
+                {
+                    this->state = State::SubmissionComplete;
+                    return;
+                }
+            }
+        }
+    });
 
     this->completionThread = std::thread([&]() {
         while (true)
         {
-            while (this->jobsRunning)
+            while (this->copiesRunning)
             {
                 io_uring_cqe *cqe = nullptr;
                 release_assert(io_uring_wait_cqe_nr(&ring, &cqe, 1) == 0);
@@ -33,33 +67,34 @@ void CopyQueue::start()
                 if (eventData->copyData->onCompletionEvent(eventData->type, result))
                 {
                     delete eventData->copyData;
-                    jobsRunning--;
+                    copiesRunning--;
                 }
 
                 io_uring_cqe_seen(&ring, cqe);
             }
 
-            while (this->jobsRunning == 0)
-            {
-                if (this->done)
-                    return true;
-            }
+            // We want to check the state _first_, then check the jobsRunning count, to avoid a race condition.
+            if (this->state == State::SubmissionComplete && this->copiesRunning == 0)
+                return;
         }
     });
 }
 
 void CopyQueue::join()
 {
-    this->done = true;
+    this->state = State::AdditionComplete;
+    this->submitThread.join();
     this->completionThread.join();
+    this->state = State::Idle;
 }
-
 
 void CopyQueue::addCopyJob(int sourceFd, int destFd, off_t size)
 {
-    while(jobsRunning > RING_SIZE) {} // this is a bit nasty alright
-
-    jobsRunning++;
-    (new CopyRunner(this, sourceFd, destFd, size))->addToBatch();
+    debug_assert(this->state = State::Running);
+    {
+        std::scoped_lock lock(this->copiesPendingStartMutex);
+        this->copiesPendingStart.push_back(new CopyRunner(this, sourceFd, destFd, size));
+    }
+    this->copiesPendingStartCount++;
 }
 

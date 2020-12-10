@@ -35,18 +35,27 @@ void CopyRunner::addToBatch()
     debug_assert(this->jobsRunning == 0);
     debug_assert(this->writeOffset <= this->size);
 
-    io_uring_sqe* sqe = nullptr;
-
     unsigned int bytesToRead = this->size - this->readOffset;
 #if DEBUG_FORCE_PARTIAL_READS
     bytesToRead = rand() % (bytesToRead + 1);
-        bool readIsPartial = bytesToRead < this->size - this->readOffset;
+    bool readIsPartial = bytesToRead < this->size - this->readOffset;
 #endif
+
+    auto getSqe = [&]()
+    {
+        this->jobsRunning++;
+        this->queue->submissionsRunning++;
+        io_uring_sqe* sqe = nullptr;
+
+        // TODO: we busy loop here
+        while (!sqe)
+            sqe = io_uring_get_sqe(&this->queue->ring);
+        return sqe;
+    };
 
     if (bytesToRead)
     {
-        sqe = io_uring_get_sqe(&queue->ring);
-        this->jobsRunning++;
+        io_uring_sqe* sqe = getSqe();
 
         io_uring_prep_read(sqe, this->sourceFd, this->buffer + this->readOffset, bytesToRead, this->readOffset);
         sqe->flags |= IOSQE_IO_LINK;
@@ -57,8 +66,7 @@ void CopyRunner::addToBatch()
 
     if (this->writeOffset < this->size || this->size == 0)
     {
-        sqe = io_uring_get_sqe(&queue->ring);
-        this->jobsRunning++;
+        io_uring_sqe* sqe = getSqe();
 
         auto prepWrite = [&]()
         {
@@ -92,12 +100,14 @@ void CopyRunner::addToBatch()
         sqe->user_data = reinterpret_cast<__u64>(&this->writeData);
     }
 
+    debug_assert(this->jobsRunning <= MAX_JOBS_PER_RUNNER);
     io_uring_submit(&queue->ring);
 }
 
 bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
 {
     this->jobsRunning--;
+    this->queue->submissionsRunning--;
     debug_assert(jobsRunning >= 0);
 
     if (type == EventData::Type::Read)
@@ -105,6 +115,8 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
 #if DEBUG_COPY_OPS
         printf("RD %d->%d JR:%d RES: %d\n", this->sourceFd, this->destFd, this->jobsRunning, result);
 #endif
+        if (result < 0)
+            printf("res %d\n", result);
         release_assert(result > 0);
         this->readOffset += result;
     }
