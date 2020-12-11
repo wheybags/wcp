@@ -19,6 +19,9 @@ public:
 
 private:
     friend class CopyRunner;
+    void continueCopyJob(CopyRunner* runner);
+
+private:
 
     static constexpr uint32_t RING_SIZE = 100;
     static constexpr uint32_t COMPLETION_RING_SIZE = RING_SIZE * 2; // TODO: I think this is right, need to confirm
@@ -28,11 +31,10 @@ private:
     std::mutex copiesPendingStartMutex;
     std::atomic_uint32_t copiesPendingStartCount = 0;
 
-    std::mutex ringMutex;
     std::atomic_uint32_t copiesRunning = 0;
     std::atomic_uint32_t submissionsRunning = 0;
 
-    enum State
+    enum class State
     {
         Idle,
         Running,

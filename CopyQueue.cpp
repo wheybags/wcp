@@ -22,17 +22,21 @@ void CopyQueue::start()
         {
             while (this->copiesPendingStartCount)
             {
-                std::scoped_lock lock(this->copiesPendingStartMutex);
-
-                while(!this->copiesPendingStart.empty() &&
+                while(this->copiesPendingStartCount > 0 &&
                       // Rate limit to avoid overflowing the completion queue
                       (COMPLETION_RING_SIZE -this->submissionsRunning) >= CopyRunner::MAX_JOBS_PER_RUNNER)
                 {
+                    CopyRunner* toAdd = nullptr;
+                    {
+                        std::scoped_lock lock(this->copiesPendingStartMutex);
+                        debug_assert(!this->copiesPendingStart.empty());
+                        toAdd = this->copiesPendingStart.back();
+                        this->copiesPendingStart.pop_back();
+                    }
+
+                    toAdd->addToBatch();
                     this->copiesPendingStartCount--;
                     this->copiesRunning++;
-
-                    this->copiesPendingStart.back()->addToBatch();
-                    this->copiesPendingStart.pop_back();
                 }
             }
 
@@ -40,7 +44,7 @@ void CopyQueue::start()
             // We want to busy loop here to avoid holding the lock when we can't do anything.
             while (this->copiesPendingStartCount == 0)
             {
-                // We want to check the state _first_, then recheck the copiesPendingStartCount count, to avoid a race condition.
+                // We want to check the state _first_, then recheck copiesPendingStartCount, to avoid a race condition.
                 if (this->state == State::AdditionComplete && this->copiesPendingStartCount == 0)
                 {
                     this->state = State::SubmissionComplete;
@@ -56,7 +60,13 @@ void CopyQueue::start()
             while (this->copiesRunning)
             {
                 io_uring_cqe *cqe = nullptr;
-                release_assert(io_uring_wait_cqe_nr(&ring, &cqe, 1) == 0);
+
+                int err = 0;
+                do
+                {
+                    err = io_uring_wait_cqe_nr(&ring, &cqe, 1);
+                } while(err == -EINTR || err == -EAGAIN);
+                release_assert( err == 0);
 
                 auto *eventData = reinterpret_cast<CopyRunner::EventData *>(cqe->user_data);
                 __s32 result = cqe->res;
@@ -90,11 +100,18 @@ void CopyQueue::join()
 
 void CopyQueue::addCopyJob(int sourceFd, int destFd, off_t size)
 {
-    debug_assert(this->state = State::Running);
-    {
-        std::scoped_lock lock(this->copiesPendingStartMutex);
-        this->copiesPendingStart.push_back(new CopyRunner(this, sourceFd, destFd, size));
-    }
+    debug_assert(this->state == State::Running);
+
+    std::scoped_lock lock(this->copiesPendingStartMutex);
     this->copiesPendingStartCount++;
+    this->copiesPendingStart.push_back(new CopyRunner(this, sourceFd, destFd, size));
+}
+
+void CopyQueue::continueCopyJob(CopyRunner* runner)
+{
+    std::scoped_lock lock(this->copiesPendingStartMutex);
+    this->copiesRunning--;
+    this->copiesPendingStartCount++;
+    this->copiesPendingStart.push_back(runner);
 }
 

@@ -65,7 +65,7 @@ static int f(const char* fpath, const struct stat64* sb, int tflag, struct FTW* 
         // TODO: even though we've bumped the concurrent open files limit a lot, we should still probably
         // try to make sure we don't exceed it.
         int sourceFd = open(fpath, O_RDONLY);
-        int destFd = open(destPath.c_str(), O_WRONLY | O_CREAT, sb->st_mode);
+        int destFd = open(destPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, sb->st_mode);
         release_assert(sourceFd > 0);
         release_assert(destFd > 0);
         copyQueue.addCopyJob(sourceFd, destFd, sb->st_size);
@@ -103,6 +103,7 @@ int main(int argc, char** argv)
     {
         int sourceFd = open(src.c_str(), O_RDONLY);
         int destFd = open(dest.c_str(), O_WRONLY | O_CREAT, 0777);
+        release_assert(sourceFd > 0 && destFd > 0);
         copyQueue.addCopyJob(sourceFd, destFd, getFileSize(sourceFd));
     }
 
