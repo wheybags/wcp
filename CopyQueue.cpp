@@ -1,6 +1,7 @@
 #include "CopyQueue.hpp"
 #include "Assert.hpp"
 #include "CopyRunner.hpp"
+#include "Config.hpp"
 
 CopyQueue::CopyQueue()
 {
@@ -18,6 +19,7 @@ void CopyQueue::start()
     this->state = State::Running;
 
     this->submitThread = std::thread([&](){
+        // TODO: avoid busy looping? Or maybe it's fine? Not really sure tbh.
         while (true)
         {
             while (this->copiesPendingStartCount)
@@ -35,21 +37,17 @@ void CopyQueue::start()
                     }
 
                     toAdd->addToBatch();
-                    this->copiesPendingStartCount--;
                     this->copiesRunning++;
+                    this->copiesPendingStartCount--;
                 }
             }
 
-            // TODO: avoid busy looping? Or maybe it's fine? Not really sure tbh.
-            // We want to busy loop here to avoid holding the lock when we can't do anything.
-            while (this->copiesPendingStartCount == 0)
+            if (this->state == State::AdditionComplete && this->copiesRunning == 0 && this->copiesPendingStartCount == 0)
             {
-                // We want to check the state _first_, then recheck copiesPendingStartCount, to avoid a race condition.
-                if (this->state == State::AdditionComplete && this->copiesPendingStartCount == 0)
-                {
-                    this->state = State::SubmissionComplete;
-                    return;
-                }
+#if DEBUG_COPY_OPS
+                puts("SUBMIT THREAD EXIT");
+#endif
+                return;
             }
         }
     });
@@ -83,9 +81,13 @@ void CopyQueue::start()
                 io_uring_cqe_seen(&ring, cqe);
             }
 
-            // We want to check the state _first_, then check the jobsRunning count, to avoid a race condition.
-            if (this->state == State::SubmissionComplete && this->copiesRunning == 0)
+            if (this->state == State::AdditionComplete && this->copiesRunning == 0 && this->copiesPendingStartCount == 0)
+            {
+#if DEBUG_COPY_OPS
+                puts("COMPLETION THREAD EXIT");
+#endif
                 return;
+            }
         }
     });
 }
@@ -110,8 +112,8 @@ void CopyQueue::addCopyJob(int sourceFd, int destFd, off_t size)
 void CopyQueue::continueCopyJob(CopyRunner* runner)
 {
     std::scoped_lock lock(this->copiesPendingStartMutex);
-    this->copiesRunning--;
     this->copiesPendingStartCount++;
+    this->copiesRunning--;
     this->copiesPendingStart.push_back(runner);
 }
 

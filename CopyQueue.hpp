@@ -39,7 +39,6 @@ private:
         Idle,
         Running,
         AdditionComplete,
-        SubmissionComplete
     };
     std::atomic<State> state = State::Idle;
 
