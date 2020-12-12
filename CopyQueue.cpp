@@ -22,27 +22,23 @@ void CopyQueue::start()
         // TODO: avoid busy looping? Or maybe it's fine? Not really sure tbh.
         while (true)
         {
-            while (this->copiesPendingStartCount)
+            while(this->copiesPendingStartCount > 0 &&
+                  // Rate limit to avoid overflowing the completion queue
+                  (COMPLETION_RING_SIZE -this->submissionsRunning) >= CopyRunner::MAX_JOBS_PER_RUNNER)
             {
-                while(this->copiesPendingStartCount > 0 &&
-                      // Rate limit to avoid overflowing the completion queue
-                      (COMPLETION_RING_SIZE -this->submissionsRunning) >= CopyRunner::MAX_JOBS_PER_RUNNER)
+                CopyRunner* toAdd = nullptr;
                 {
-                    CopyRunner* toAdd = nullptr;
-                    {
-                        std::scoped_lock lock(this->copiesPendingStartMutex);
-                        debug_assert(!this->copiesPendingStart.empty());
-                        toAdd = this->copiesPendingStart.back();
-                        this->copiesPendingStart.pop_back();
-                    }
-
-                    toAdd->addToBatch();
-                    this->copiesRunning++;
-                    this->copiesPendingStartCount--;
+                    std::scoped_lock lock(this->copiesPendingStartMutex);
+                    debug_assert(!this->copiesPendingStart.empty());
+                    toAdd = this->copiesPendingStart.back();
+                    this->copiesPendingStart.pop_back();
                 }
+
+                toAdd->addToBatch();
+                this->copiesPendingStartCount--;
             }
 
-            if (this->state == State::AdditionComplete && this->copiesRunning == 0 && this->copiesPendingStartCount == 0)
+            if (this->state == State::AdditionComplete && this->keepAliveCount == 0)
             {
 #if DEBUG_COPY_OPS
                 puts("SUBMIT THREAD EXIT");
@@ -55,7 +51,7 @@ void CopyQueue::start()
     this->completionThread = std::thread([&]() {
         while (true)
         {
-            while (this->copiesRunning)
+            while (this->keepAliveCount)
             {
                 io_uring_cqe *cqe = nullptr;
 
@@ -75,13 +71,13 @@ void CopyQueue::start()
                 if (eventData->copyData->onCompletionEvent(eventData->type, result))
                 {
                     delete eventData->copyData;
-                    copiesRunning--;
+                    this->keepAliveCount--;
                 }
 
                 io_uring_cqe_seen(&ring, cqe);
             }
 
-            if (this->state == State::AdditionComplete && this->copiesRunning == 0 && this->copiesPendingStartCount == 0)
+            if (this->state == State::AdditionComplete && this->keepAliveCount == 0)
             {
 #if DEBUG_COPY_OPS
                 puts("COMPLETION THREAD EXIT");
@@ -105,6 +101,7 @@ void CopyQueue::addCopyJob(int sourceFd, int destFd, off_t size)
     debug_assert(this->state == State::Running);
 
     std::scoped_lock lock(this->copiesPendingStartMutex);
+    this->keepAliveCount++;
     this->copiesPendingStartCount++;
     this->copiesPendingStart.push_back(new CopyRunner(this, sourceFd, destFd, size));
 }
@@ -113,7 +110,6 @@ void CopyQueue::continueCopyJob(CopyRunner* runner)
 {
     std::scoped_lock lock(this->copiesPendingStartMutex);
     this->copiesPendingStartCount++;
-    this->copiesRunning--;
     this->copiesPendingStart.push_back(runner);
 }
 

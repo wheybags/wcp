@@ -29,9 +29,10 @@ private:
 
     std::vector<CopyRunner*> copiesPendingStart;
     std::mutex copiesPendingStartMutex;
-    std::atomic_uint32_t copiesPendingStartCount = 0;
 
-    std::atomic_uint32_t copiesRunning = 0;
+    std::atomic_uint32_t copiesPendingStartCount = 0;
+    std::atomic_uint32_t keepAliveCount = 0;
+
     std::atomic_uint32_t submissionsRunning = 0;
 
     enum class State
