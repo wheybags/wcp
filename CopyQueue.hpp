@@ -3,7 +3,6 @@
 #include <pthread.h>
 #include <mutex>
 #include <atomic>
-#include <thread>
 #include <vector>
 
 class CopyRunner;
@@ -35,7 +34,8 @@ private:
     io_uring ring = {};
 
     std::vector<CopyRunner*> copiesPendingStart;
-    std::mutex copiesPendingStartMutex;
+    pthread_mutexattr_t mutexAttrs;
+    pthread_mutex_t copiesPendingStartMutex;
 
     std::atomic_uint32_t copiesPendingStartCount = 0;
     std::atomic_uint32_t keepAliveCount = 0;

@@ -6,11 +6,17 @@
 CopyQueue::CopyQueue()
 {
     release_assert(io_uring_queue_init(RING_SIZE, &this->ring, 0) == 0);
+
+    release_assert(pthread_mutexattr_init(&this->mutexAttrs) == 0);
+    release_assert(pthread_mutexattr_settype(&this->mutexAttrs, PTHREAD_MUTEX_ADAPTIVE_NP) == 0);
+    release_assert(pthread_mutex_init(&this->copiesPendingStartMutex, &this->mutexAttrs) == 0);
 }
 
 CopyQueue::~CopyQueue()
 {
     io_uring_queue_exit(&this->ring);
+    debug_assert(pthread_mutex_destroy(&this->copiesPendingStartMutex) == 0);
+    debug_assert(pthread_mutexattr_destroy(&this->mutexAttrs) == 0);
 }
 
 void CopyQueue::submitLoop()
@@ -25,12 +31,14 @@ void CopyQueue::submitLoop()
               (COMPLETION_RING_SIZE -this->submissionsRunning) >= CopyRunner::MAX_JOBS_PER_RUNNER)
         {
             CopyRunner* toAdd = nullptr;
+            pthread_mutex_lock(&this->copiesPendingStartMutex);
             {
-                std::scoped_lock lock(this->copiesPendingStartMutex);
                 debug_assert(!this->copiesPendingStart.empty());
                 toAdd = this->copiesPendingStart.back();
                 this->copiesPendingStart.pop_back();
             }
+            pthread_mutex_unlock(&this->copiesPendingStartMutex);
+
 
             toAdd->addToBatch();
             this->copiesPendingStartCount--;
@@ -99,7 +107,9 @@ void CopyQueue::start()
 
 void CopyQueue::join()
 {
+    debug_assert(this->state == State::Running);
     this->state = State::AdditionComplete;
+
     pthread_join(this->submitThread, nullptr);
     pthread_join(this->completionThread, nullptr);
     this->state = State::Idle;
@@ -109,16 +119,22 @@ void CopyQueue::addCopyJob(int sourceFd, int destFd, off_t size)
 {
     debug_assert(this->state == State::Running);
 
-    std::scoped_lock lock(this->copiesPendingStartMutex);
-    this->keepAliveCount++;
-    this->copiesPendingStartCount++;
-    this->copiesPendingStart.push_back(new CopyRunner(this, sourceFd, destFd, size));
+    pthread_mutex_lock(&this->copiesPendingStartMutex);
+    {
+        this->keepAliveCount++;
+        this->copiesPendingStartCount++;
+        this->copiesPendingStart.push_back(new CopyRunner(this, sourceFd, destFd, size));
+    }
+    pthread_mutex_unlock(&this->copiesPendingStartMutex);
 }
 
 void CopyQueue::continueCopyJob(CopyRunner* runner)
 {
-    std::scoped_lock lock(this->copiesPendingStartMutex);
-    this->copiesPendingStartCount++;
-    this->copiesPendingStart.push_back(runner);
+    pthread_mutex_lock(&this->copiesPendingStartMutex);
+    {
+        this->copiesPendingStartCount++;
+        this->copiesPendingStart.push_back(runner);
+    }
+    pthread_mutex_unlock(&this->copiesPendingStartMutex);
 }
 
