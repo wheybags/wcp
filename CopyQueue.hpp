@@ -1,5 +1,6 @@
 #pragma once
 #include <liburing.h>
+#include <pthread.h>
 #include <mutex>
 #include <atomic>
 #include <thread>
@@ -20,6 +21,12 @@ public:
 private:
     friend class CopyRunner;
     void continueCopyJob(CopyRunner* runner);
+
+    void submitLoop();
+    void completionLoop();
+
+    static void* staticCallSubmitLoop(void* instance) { reinterpret_cast<CopyQueue*>(instance)->submitLoop(); return nullptr; }
+    static void* staticCallCompletionLoop(void* instance) { reinterpret_cast<CopyQueue*>(instance)->completionLoop(); return nullptr; }
 
 private:
 
@@ -43,8 +50,8 @@ private:
     };
     std::atomic<State> state = State::Idle;
 
-    std::thread completionThread;
-    std::thread submitThread;
+    pthread_t completionThread;
+    pthread_t submitThread;
 };
 
 
