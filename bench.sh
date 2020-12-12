@@ -2,15 +2,43 @@
 
 set -euo pipefail
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage $0 <SIZE_MB> <FILE_COUNT>" >&2
+only_wcp="false"
+bad_arg="false"
+
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+
+    # Options all start with "-", and are always at the start of the params
+    if [ "${arg:0:1}" != "-" ]; then
+        break
+    fi
+
+    case "$arg" in
+        -w|--only-wcp)
+            only_wcp="true"
+            shift
+        ;;
+
+        *)
+            bad_arg="true"
+            echo "Unrecognised option: $1" >&2
+            echo >&2
+            break
+        ;;
+    esac
+done
+
+if [ "$#" -ne 2 ] || [ "$bad_arg" == "true" ]; then
+    echo "Usage $0 [OPTION]... [FILE_SIZE] [FILE_COUNT]" >&2
+    echo "Options:" >&2
+    echo "  -w|--only-wcp       Don't run other programs for comparison" >&2
     exit 1
 fi
 
-SIZE_MB=$1
+FILE_SIZE=$1
 FILE_COUNT=$2
 
-TEST_DATA="./test_data/$SIZE_MB""_$FILE_COUNT"
+TEST_DATA="./test_data/$FILE_SIZE""_$FILE_COUNT"
 TEST_DEST="./test_dest"
 
 build() {
@@ -23,13 +51,13 @@ build() {
 
 generate_data() {
     local test_folder="$1"
-    local size_in_mb="$2"
+    local file_size="$2"
     local count="$3"
 
     for i in $(seq 1 "$count"); do
         echo "    Generating file $i/$count"
-        mkdir -p "$test_folder/$size_in_mb"
-        chronic dd if=/dev/urandom of="$test_folder/$size_in_mb/$i" bs=1M count="$size_in_mb" 2>&1
+        mkdir -p "$test_folder/$file_size"
+        chronic dd if=/dev/urandom of="$test_folder/$file_size/$i" bs="$file_size" count=1 2>&1
     done
 }
 
@@ -62,7 +90,7 @@ run_test() {
 if [ ! -e "$TEST_DATA/done_tag" ]; then
     echo "Generating test data..."
     rm -rf "$TEST_DATA"
-    generate_data "$TEST_DATA" "$SIZE_MB" "$FILE_COUNT"
+    generate_data "$TEST_DATA" "$FILE_SIZE" "$FILE_COUNT"
     touch "$TEST_DATA/done_tag"
 fi
 
@@ -71,8 +99,10 @@ TOTAL_FILE_COUNT=$(find "$TEST_DATA" -type f | wc -l)
 
 build
 
-run_test "cp -r"
-run_test "rsync -r --inplace -W --no-compress"
+if [ "$only_wcp" == "false" ]; then
+  run_test "cp -r"
+  run_test "rsync -r --inplace -W --no-compress"
+fi
 
 run_test "./build_test/wcp"
 diff -r "$TEST_DATA" "$TEST_DEST"
