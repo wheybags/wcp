@@ -52,6 +52,19 @@ CopyQueue copyQueue;
 std::string src;
 std::string dest;
 
+void addFile(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, off_t size)
+{
+    off_t blockSize = 256 * 1024 * 1024; // 256M
+
+    off_t offset = 0;
+    while (offset != size)
+    {
+        off_t count = std::min(blockSize, size - offset);
+        copyQueue.addCopyJob(sourceFd, destFd, offset, count);
+        offset += count;
+    }
+}
+
 static int f(const char* fpath, const struct stat64* sb, int tflag, struct FTW* ftwbuf)
 {
     std::string destPath = dest + (fpath + src.length());
@@ -64,14 +77,23 @@ static int f(const char* fpath, const struct stat64* sb, int tflag, struct FTW* 
     {
         // TODO: even though we've bumped the concurrent open files limit a lot, we should still probably
         // try to make sure we don't exceed it.
-        int sourceFd = open(fpath, O_RDONLY);
-        int destFd = open(destPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, sb->st_mode);
-        release_assert(sourceFd > 0);
-        release_assert(destFd > 0);
-        copyQueue.addCopyJob(sourceFd, destFd, sb->st_size);
+        auto sourceFd = std::make_shared<FileDescriptor>(open(fpath, O_RDONLY));
+        release_assert(sourceFd->fd > 0);
+        auto destFd = std::make_shared<FileDescriptor>(open(destPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, sb->st_mode));
+        release_assert(destFd->fd > 0);
+
+        addFile(sourceFd, destFd, sb->st_size);
     }
 
     return 0;
+}
+
+uint64_t getPhysicalRamSize()
+{
+    long pages = sysconf(_SC_PHYS_PAGES);
+    long pageSize = sysconf(_SC_PAGE_SIZE);
+    release_assert(pages != -1 && pageSize != -1);
+    return uint64_t(pages) * uint64_t(pageSize);
 }
 
 int main(int argc, char** argv)
@@ -101,10 +123,12 @@ int main(int argc, char** argv)
     }
     else
     {
-        int sourceFd = open(src.c_str(), O_RDONLY);
-        int destFd = open(dest.c_str(), O_WRONLY | O_CREAT, 0777);
-        release_assert(sourceFd > 0 && destFd > 0);
-        copyQueue.addCopyJob(sourceFd, destFd, getFileSize(sourceFd));
+        auto sourceFd = std::make_shared<FileDescriptor>(open(src.c_str(), O_RDONLY));
+        release_assert(sourceFd->fd > 0);
+        auto destFd = std::make_shared<FileDescriptor>(open(dest.c_str(), O_WRONLY | O_CREAT, 0777));
+        release_assert(destFd->fd > 0);
+
+        addFile(sourceFd, destFd, getFileSize(sourceFd->fd));
     }
 
     copyQueue.join();

@@ -8,12 +8,19 @@
 #include <cstring>
 
 
-CopyRunner::CopyRunner(CopyQueue* queue, int sourceFd, int destFd, off_t size)
+CopyRunner::CopyRunner(CopyQueue* queue,
+                       std::shared_ptr<FileDescriptor> sourceFd,
+                       std::shared_ptr<FileDescriptor> destFd,
+                       off_t offset,
+                       off_t size)
         : queue(queue)
-        , sourceFd(sourceFd)
-        , destFd(destFd)
+        , sourceFd(std::move(sourceFd))
+        , destFd(std::move(destFd))
+        , offset(offset)
         , size(size)
         , buffer(new uint8_t[size])
+        , readOffset(offset)
+        , writeOffset(offset)
 {}
 
 CopyRunner::~CopyRunner()
@@ -21,18 +28,16 @@ CopyRunner::~CopyRunner()
     release_assert(jobsRunning == 0);
 
     delete[] buffer;
-    close(sourceFd);
-    close(destFd);
 }
 
 void CopyRunner::addToBatch()
 {
 #if DEBUG_COPY_OPS
-    printf("START %d->%d\n", this->sourceFd, this->destFd);
+    printf("START %d->%d\n", this->sourceFd->fd, this->destFd->fd);
 #endif
 
     debug_assert(this->jobsRunning == 0);
-    debug_assert(this->writeOffset <= this->size);
+    debug_assert(this->writeOffset <= this->offset + this->size);
 
     auto getSqe = [&]()
     {
@@ -46,36 +51,36 @@ void CopyRunner::addToBatch()
         return sqe;
     };
 
-    unsigned int bytesToRead = this->size - this->readOffset;
+    unsigned int bytesToRead = this->offset + this->size - this->readOffset;
 #if DEBUG_FORCE_PARTIAL_READS
     bytesToRead = rand() % (bytesToRead + 1);
-    bool readIsPartial = bytesToRead < this->size - this->readOffset;
+    bool readIsPartial = bytesToRead < this->offset + this->size - this->readOffset;
 #endif
 
     if (bytesToRead)
     {
         io_uring_sqe* sqe = getSqe();
 
-        io_uring_prep_read(sqe, this->sourceFd, this->buffer + this->readOffset, bytesToRead, this->readOffset);
+        io_uring_prep_read(sqe, this->sourceFd->fd, this->buffer + this->readOffset - this->offset, bytesToRead, this->readOffset);
         sqe->flags |= IOSQE_IO_LINK;
 
         static_assert(sizeof(sqe->user_data) == sizeof(void*));
         sqe->user_data = reinterpret_cast<__u64>(&this->readData);
     }
 
-    if (this->writeOffset < this->size || this->size == 0)
+    if (this->writeOffset < this->offset + this->size || this->size == 0)
     {
         io_uring_sqe* sqe = getSqe();
 
         auto prepWrite = [&]()
         {
-            unsigned int bytesToWrite = this->size - this->writeOffset;
+            unsigned int bytesToWrite = this->offset + this->size - this->writeOffset;
 #if DEBUG_FORCE_PARTIAL_WRITES
             bytesToWrite = rand() % (bytesToWrite + 1);
 #endif
             io_uring_prep_write(sqe,
-                                this->destFd,
-                                this->buffer + this->writeOffset,
+                                this->destFd->fd,
+                                this->buffer + this->writeOffset - this->offset,
                                 bytesToWrite,
                                 this->writeOffset);
         };
@@ -119,7 +124,7 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
     {
 #if DEBUG_COPY_OPS
         printf("RD %d->%d JR:%d RES: %d %s\n",
-               this->sourceFd, this->destFd, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
+               this->sourceFd->fd, this->destFd->fd, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
 #endif
         release_assert(result > 0);
         this->readOffset += result;
@@ -128,7 +133,7 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
     {
 #if DEBUG_COPY_OPS
         printf("WT %d->%d JR:%d RES: %d %s\n",
-               this->sourceFd, this->destFd, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
+               this->sourceFd->fd, this->destFd->fd, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
 #endif
 
         release_assert(result >= 0 || result == -ECANCELED);
@@ -136,8 +141,8 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
             this->writeOffset += result;
     }
 
-    if (this->jobsRunning == 0 && this->writeOffset < this->size)
+    if (this->jobsRunning == 0 && this->writeOffset < this->offset + this->size)
         this->queue->continueCopyJob(this);
 
-    return this->jobsRunning == 0 && this->writeOffset == this->size;
+    return this->jobsRunning == 0 && this->writeOffset == this->offset + this->size;
 }

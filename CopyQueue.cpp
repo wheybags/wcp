@@ -115,7 +115,7 @@ void CopyQueue::join()
     this->state = State::Idle;
 }
 
-void CopyQueue::addCopyJob(int sourceFd, int destFd, off_t size)
+void CopyQueue::addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, off_t offset, off_t size)
 {
     debug_assert(this->state == State::Running);
 
@@ -123,7 +123,7 @@ void CopyQueue::addCopyJob(int sourceFd, int destFd, off_t size)
     {
         this->keepAliveCount++;
         this->copiesPendingStartCount++;
-        this->copiesPendingStart.push_back(new CopyRunner(this, sourceFd, destFd, size));
+        this->copiesPendingStart.push_back(new CopyRunner(this, std::move(sourceFd), std::move(destFd), offset, size));
     }
     pthread_mutex_unlock(&this->copiesPendingStartMutex);
 }

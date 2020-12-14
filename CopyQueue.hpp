@@ -4,6 +4,8 @@
 #include <mutex>
 #include <atomic>
 #include <vector>
+#include <memory>
+#include "FileDescriptor.hpp"
 
 class CopyRunner;
 
@@ -13,7 +15,7 @@ public:
     CopyQueue();
     ~CopyQueue();
 
-    void addCopyJob(int sourceFd, int destFd, off_t size);
+    void addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, off_t offset, off_t size);
     void start();
     void join();
 

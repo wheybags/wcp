@@ -23,7 +23,11 @@ public:
         Type type;
     };
 
-    CopyRunner(CopyQueue* queue, int sourceFd, int destFd, off_t size);
+    CopyRunner(CopyQueue* queue,
+               std::shared_ptr<FileDescriptor> sourceFd,
+               std::shared_ptr<FileDescriptor> destFd,
+               off_t offset,
+               off_t size);
     ~CopyRunner();
 
     void addToBatch();
@@ -34,8 +38,9 @@ public:
 
 private:
     CopyQueue* queue;
-    int sourceFd;
-    int destFd;
+    std::shared_ptr<FileDescriptor> sourceFd;
+    std::shared_ptr<FileDescriptor> destFd;
+    off_t offset;
     off_t size;
     uint8_t* buffer;
 
