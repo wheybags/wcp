@@ -2,10 +2,8 @@
 #include "CopyQueue.hpp"
 #include "Assert.hpp"
 #include "Config.hpp"
-#include <unistd.h>
 #include <liburing.h>
 #include <cerrno>
-#include <cstring>
 
 
 CopyRunner::CopyRunner(CopyQueue* queue,
@@ -18,7 +16,6 @@ CopyRunner::CopyRunner(CopyQueue* queue,
         , destFd(std::move(destFd))
         , offset(offset)
         , size(size)
-        , buffer((uint8_t*)aligned_alloc(4096, size)) // TODO: this needs to be queried, not hardcoded
         , readOffset(offset)
         , writeOffset(offset)
 {}
@@ -27,11 +24,15 @@ CopyRunner::~CopyRunner()
 {
     release_assert(jobsRunning == 0);
 
-    free(buffer);
+    if (this->buffer)
+        this->queue->copyBufferHeap.returnBlock(this->buffer);
 }
 
 void CopyRunner::addToBatch()
 {
+    while(!this->buffer)
+        this->buffer = this->queue->copyBufferHeap.getBlock(); // TODO: we need to align the buffer
+
 #if DEBUG_COPY_OPS
     printf("START %d->%d\n", this->sourceFd->fd, this->destFd->fd);
 #endif

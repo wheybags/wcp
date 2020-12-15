@@ -48,19 +48,19 @@ static void recursive_mkdir(const char *dir) {
     mkdir(tmp, S_IRWXU);
 }
 
-CopyQueue copyQueue;
+CopyQueue* copyQueue = nullptr;
+
 std::string src;
 std::string dest;
 
 void addFile(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, off_t size)
 {
-    off_t blockSize = 256 * 1024 * 1024; // 256M
 
     off_t offset = 0;
     while (offset != size)
     {
-        off_t count = std::min(blockSize, size - offset);
-        copyQueue.addCopyJob(sourceFd, destFd, offset, count);
+        off_t count = std::min(off_t(copyQueue->getBlockSize()), size - offset);
+        copyQueue->addCopyJob(sourceFd, destFd, offset, count);
         offset += count;
     }
 }
@@ -88,12 +88,12 @@ static int f(const char* fpath, const struct stat64* sb, int tflag, struct FTW* 
     return 0;
 }
 
-uint64_t getPhysicalRamSize()
+size_t getPhysicalRamSize()
 {
     long pages = sysconf(_SC_PHYS_PAGES);
     long pageSize = sysconf(_SC_PAGE_SIZE);
     release_assert(pages != -1 && pageSize != -1);
-    return uint64_t(pages) * uint64_t(pageSize);
+    return size_t(pages) * size_t(pageSize);
 }
 
 int main(int argc, char** argv)
@@ -112,7 +112,15 @@ int main(int argc, char** argv)
         setrlimit64(RLIMIT_NOFILE, &openFilesLimit);
     }
 
-    copyQueue.start();
+    {
+        size_t oneGig = 1024 * 1024 * 1024;
+        size_t ramQuota = std::max(getPhysicalRamSize() / 10, oneGig);
+        size_t blockSize = 256 * 1024 * 1024; // 256M
+        size_t ringSize = 100;
+        copyQueue = new CopyQueue(ringSize, ramQuota / blockSize, blockSize);
+    }
+
+    copyQueue->start();
 
     struct stat64 st = {};
     stat64(src.c_str(), &st);
@@ -131,7 +139,7 @@ int main(int argc, char** argv)
         addFile(sourceFd, destFd, getFileSize(sourceFd->fd));
     }
 
-    copyQueue.join();
+    copyQueue->join();
 
     return 0;
 }

@@ -42,7 +42,7 @@ private:
     std::shared_ptr<FileDescriptor> destFd;
     off_t offset;
     off_t size;
-    uint8_t* buffer;
+    uint8_t* buffer = nullptr;
 
     off_t readOffset = 0;
     off_t writeOffset = 0;

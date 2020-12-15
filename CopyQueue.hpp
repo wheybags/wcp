@@ -6,18 +6,21 @@
 #include <vector>
 #include <memory>
 #include "FileDescriptor.hpp"
+#include "Heap.hpp"
 
 class CopyRunner;
 
 class CopyQueue
 {
 public:
-    CopyQueue();
+    explicit CopyQueue(size_t ringSize, size_t heapBlocks, size_t heapBlockSize);
     ~CopyQueue();
 
     void addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, off_t offset, off_t size);
     void start();
     void join();
+
+    size_t getBlockSize() const { return this->copyBufferHeap.getBlockSize(); }
 
 private:
     friend class CopyRunner;
@@ -31,8 +34,10 @@ private:
 
 private:
 
-    static constexpr uint32_t RING_SIZE = 100;
-    static constexpr uint32_t COMPLETION_RING_SIZE = RING_SIZE * 2; // TODO: I think this is right, need to confirm
+    size_t ringSize;
+    size_t completionRingSize;
+
+    Heap copyBufferHeap;
     io_uring ring = {};
 
     std::vector<CopyRunner*> copiesPendingStart;

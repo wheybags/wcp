@@ -3,9 +3,12 @@
 #include "CopyRunner.hpp"
 #include "Config.hpp"
 
-CopyQueue::CopyQueue()
+CopyQueue::CopyQueue(size_t ringSize, size_t heapBlocks, size_t heapBlockSize)
+    : copyBufferHeap(heapBlocks, heapBlockSize)
+    , ringSize(ringSize)
+    , completionRingSize(ringSize * 2) // TODO: I think this is right, need to confirm)
 {
-    release_assert(io_uring_queue_init(RING_SIZE, &this->ring, 0) == 0);
+    release_assert(io_uring_queue_init(this->ringSize, &this->ring, 0) == 0);
 
     release_assert(pthread_mutexattr_init(&this->mutexAttrs) == 0);
     release_assert(pthread_mutexattr_settype(&this->mutexAttrs, PTHREAD_MUTEX_ADAPTIVE_NP) == 0);
@@ -28,7 +31,7 @@ void CopyQueue::submitLoop()
     {
         while(this->copiesPendingStartCount > 0 &&
               // Rate limit to avoid overflowing the completion queue
-              (COMPLETION_RING_SIZE -this->submissionsRunning) >= CopyRunner::MAX_JOBS_PER_RUNNER)
+              (this->completionRingSize - this->submissionsRunning) >= CopyRunner::MAX_JOBS_PER_RUNNER)
         {
             CopyRunner* toAdd = nullptr;
             pthread_mutex_lock(&this->copiesPendingStartMutex);
@@ -40,7 +43,7 @@ void CopyQueue::submitLoop()
             pthread_mutex_unlock(&this->copiesPendingStartMutex);
 
 
-            toAdd->addToBatch();
+            toAdd->addToBatch(); // This might block for a while, if all the heap blocks are already in use
             this->copiesPendingStartCount--;
         }
 
