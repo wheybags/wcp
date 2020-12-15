@@ -77,7 +77,7 @@ static int f(const char* fpath, const struct stat64* sb, int tflag, struct FTW* 
     {
         // TODO: even though we've bumped the concurrent open files limit a lot, we should still probably
         // try to make sure we don't exceed it.
-        auto sourceFd = std::make_shared<FileDescriptor>(open(fpath, O_RDONLY));
+        auto sourceFd = std::make_shared<FileDescriptor>(open(fpath, O_RDONLY | O_DIRECT));
         release_assert(sourceFd->fd > 0);
         auto destFd = std::make_shared<FileDescriptor>(open(destPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, sb->st_mode));
         release_assert(destFd->fd > 0);
@@ -123,7 +123,7 @@ int main(int argc, char** argv)
     }
     else
     {
-        auto sourceFd = std::make_shared<FileDescriptor>(open(src.c_str(), O_RDONLY));
+        auto sourceFd = std::make_shared<FileDescriptor>(open(src.c_str(), O_RDONLY | O_DIRECT));
         release_assert(sourceFd->fd > 0);
         auto destFd = std::make_shared<FileDescriptor>(open(dest.c_str(), O_WRONLY | O_CREAT, 0777));
         release_assert(destFd->fd > 0);
