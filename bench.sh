@@ -82,9 +82,7 @@ run_test() {
     seconds=$(cat /tmp/wcp_bench_ts_temp)
     mibps=$(echo "scale=2;($TOTAL_SIZE)/$seconds" | bc)
     filesps=$(echo "scale=2;($TOTAL_FILE_COUNT)/$seconds" | bc)
-    echo "    finished in $seconds""s"
-    echo "    avg $mibps MiB/s"
-    echo "    avg $filesps files/s"
+    echo -e "    $seconds""s\t$mibps MiB/s\t$filesps files/s"
 }
 
 if [ ! -e "$TEST_DATA/done_tag" ]; then
