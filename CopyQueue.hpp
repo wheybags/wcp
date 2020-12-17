@@ -26,11 +26,15 @@ private:
     friend class CopyRunner;
     void continueCopyJob(CopyRunner* runner);
 
+    bool isDone();
+
     void submitLoop();
     void completionLoop();
+    void showProgressLoop();
 
     static void* staticCallSubmitLoop(void* instance) { reinterpret_cast<CopyQueue*>(instance)->submitLoop(); return nullptr; }
     static void* staticCallCompletionLoop(void* instance) { reinterpret_cast<CopyQueue*>(instance)->completionLoop(); return nullptr; }
+    static void* staticCallShowProgressLoop(void* instance) { reinterpret_cast<CopyQueue*>(instance)->showProgressLoop(); return nullptr; }
 
 private:
 
@@ -49,6 +53,9 @@ private:
 
     std::atomic_uint32_t submissionsRunning = 0;
 
+    std::atomic<size_t> totalBytesToCopy = 0;
+    std::atomic<size_t> totalBytesCopied = 0;
+
     enum class State
     {
         Idle,
@@ -59,6 +66,7 @@ private:
 
     pthread_t completionThread;
     pthread_t submitThread;
+    pthread_t showProgressThread;
 };
 
 

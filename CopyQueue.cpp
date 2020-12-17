@@ -1,3 +1,4 @@
+#include <iomanip>
 #include "CopyQueue.hpp"
 #include "Assert.hpp"
 #include "CopyRunner.hpp"
@@ -21,6 +22,12 @@ CopyQueue::~CopyQueue()
     debug_assert(pthread_mutex_destroy(&this->copiesPendingStartMutex) == 0);
     debug_assert(pthread_mutexattr_destroy(&this->mutexAttrs) == 0);
 }
+
+bool CopyQueue::isDone()
+{
+    return this->state == State::AdditionComplete && this->keepAliveCount == 0;
+}
+
 
 void CopyQueue::submitLoop()
 {
@@ -47,7 +54,7 @@ void CopyQueue::submitLoop()
             this->copiesPendingStartCount--;
         }
 
-        if (this->state == State::AdditionComplete && this->keepAliveCount == 0)
+        if (this->isDone())
         {
 #if DEBUG_COPY_OPS
             puts("SUBMIT THREAD EXIT");
@@ -89,7 +96,7 @@ void CopyQueue::completionLoop()
             io_uring_cqe_seen(&ring, cqe);
         }
 
-        if (this->state == State::AdditionComplete && this->keepAliveCount == 0)
+        if (this->isDone())
         {
 #if DEBUG_COPY_OPS
             puts("COMPLETION THREAD EXIT");
@@ -99,13 +106,105 @@ void CopyQueue::completionLoop()
     }
 }
 
+void CopyQueue::showProgressLoop()
+{
+    pthread_setname_np(pthread_self(), "Show Progress thread");
+
+    auto humanFriendlyFileSize = [](size_t bytes)
+    {
+        size_t kibibyte = 1024;
+        size_t mebibyte = kibibyte * 1024;
+        size_t gibibyte = mebibyte * 1024;
+        size_t tebibyte = gibibyte * 1024;
+
+        double final = bytes;
+        std::string unit = "B";
+
+        if (bytes >= tebibyte)
+        {
+            final = double(__float128(bytes) / __float128(tebibyte));
+            unit = "TiB";
+        }
+        else if (bytes >= gibibyte)
+        {
+            final = double(bytes) / double(gibibyte);
+            unit = "GiB";
+        }
+        else if (bytes >= mebibyte)
+        {
+            final = double(bytes) / double(mebibyte);
+            unit = "MiB";
+        }
+        else if (bytes >= kibibyte)
+        {
+            final = double(bytes) / double(kibibyte);
+            unit = "KiB";
+        }
+
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(2) << final;
+        std::string str = ss.str();
+
+        // strip trailing zeros
+        if (str.find('.') != std::string::npos)
+        {
+            for (int32_t i = str.size() - 1; i >= 0; i--)
+            {
+                if (str[i] == '0')
+                {
+                    str.resize(str.size() - 1);
+                }
+                else if (str[i] == '.')
+                {
+                    str.resize(str.size() - 1);
+                    break;
+                }
+                else
+                {
+                    break;
+                }
+            }
+        }
+
+        return str + unit;
+    };
+
+    auto showProgress = [&]()
+    {
+        if (int(this->state.load()) >= int(State::AdditionComplete))
+        {
+            int percentDone = this->totalBytesToCopy > 0 ? int(float(this->totalBytesCopied) / float(this->totalBytesToCopy) * 100.0f) : 0;
+
+            printf("Copied %s / %s (%d%%)\n",
+                   humanFriendlyFileSize(this->totalBytesCopied).c_str(),
+                   humanFriendlyFileSize(this->totalBytesToCopy).c_str(),
+                   percentDone);
+        }
+        else
+        {
+            printf("Copied %s / ???\n", humanFriendlyFileSize(this->totalBytesCopied).c_str());
+        }
+    };
+
+    while (!this->isDone())
+    {
+        showProgress();
+        usleep(1 * 1000000);
+    }
+
+    showProgress();
+}
+
 void CopyQueue::start()
 {
     release_assert(this->state == State::Idle);
     this->state = State::Running;
+    this->totalBytesToCopy = 0;
+    this->totalBytesCopied = 0;
 
     release_assert(pthread_create(&this->submitThread, nullptr, CopyQueue::staticCallSubmitLoop, this) == 0);
-    release_assert(pthread_create(&this->submitThread, nullptr, CopyQueue::staticCallCompletionLoop, this) == 0);
+    release_assert(pthread_create(&this->completionThread, nullptr, CopyQueue::staticCallCompletionLoop, this) == 0);
+    release_assert(pthread_create(&this->showProgressThread, nullptr, CopyQueue::staticCallShowProgressLoop, this) == 0);
 }
 
 void CopyQueue::join()
@@ -115,12 +214,15 @@ void CopyQueue::join()
 
     pthread_join(this->submitThread, nullptr);
     pthread_join(this->completionThread, nullptr);
+    pthread_join(this->showProgressThread, nullptr);
     this->state = State::Idle;
 }
 
 void CopyQueue::addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, off_t offset, off_t size)
 {
     debug_assert(this->state == State::Running);
+
+    this->totalBytesToCopy += size;
 
     pthread_mutex_lock(&this->copiesPendingStartMutex);
     {
@@ -140,4 +242,5 @@ void CopyQueue::continueCopyJob(CopyRunner* runner)
     }
     pthread_mutex_unlock(&this->copiesPendingStartMutex);
 }
+
 

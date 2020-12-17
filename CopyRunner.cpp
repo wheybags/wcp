@@ -4,6 +4,7 @@
 #include "Config.hpp"
 #include <liburing.h>
 #include <cerrno>
+#include <cstring>
 
 
 CopyRunner::CopyRunner(CopyQueue* queue,
@@ -139,7 +140,10 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
 
         release_assert(result >= 0 || result == -ECANCELED);
         if (result > 0)
+        {
             this->writeOffset += result;
+            this->queue->totalBytesCopied += result;
+        }
     }
 
     if (this->jobsRunning == 0 && this->writeOffset < this->offset + this->size)
