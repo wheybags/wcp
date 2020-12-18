@@ -18,7 +18,13 @@ public:
 
     void addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, off_t offset, off_t size);
     void start();
-    void join();
+
+    enum class OnCompletionAction : uint8_t
+    {
+        ExitProcessNoCleanup,
+        Return
+    };
+    void join(OnCompletionAction onCompletionAction);
 
     size_t getBlockSize() const { return this->copyBufferHeap.getBlockSize(); }
 
@@ -27,6 +33,7 @@ private:
     void continueCopyJob(CopyRunner* runner);
 
     bool isDone();
+    void exitProcess();
 
     void submitLoop();
     void completionLoop();
@@ -40,6 +47,7 @@ private:
 
     size_t ringSize;
     size_t completionRingSize;
+    std::atomic<OnCompletionAction> completionAction = OnCompletionAction::Return;
 
     Heap copyBufferHeap;
     io_uring ring = {};
@@ -66,7 +74,10 @@ private:
 
     pthread_t completionThread;
     pthread_t submitThread;
+
     pthread_t showProgressThread;
+    bool showingProgress = false;
+    pthread_mutex_t progressEndMutex = PTHREAD_MUTEX_INITIALIZER;
 };
 
 

@@ -1,4 +1,6 @@
 #include <iomanip>
+#include <sys/ioctl.h>
+#include <cmath>
 #include "CopyQueue.hpp"
 #include "Assert.hpp"
 #include "CopyRunner.hpp"
@@ -28,6 +30,13 @@ bool CopyQueue::isDone()
     return this->state == State::AdditionComplete && this->keepAliveCount == 0;
 }
 
+void CopyQueue::exitProcess()
+{
+    // When being used as a single queue for one copy operation, we can just exit immediately when we're done.
+    // No need to carefully clean up all our threads and memory allocations, the kernel will clean up for us.
+    // Using _exit disables any registered atexit handlers from running.
+    _exit(0); // TODO: some sensible error code
+}
 
 void CopyQueue::submitLoop()
 {
@@ -101,6 +110,9 @@ void CopyQueue::completionLoop()
 #if DEBUG_COPY_OPS
             puts("COMPLETION THREAD EXIT");
 #endif
+
+            if (completionAction == OnCompletionAction::ExitProcessNoCleanup)
+                this->exitProcess();
             return;
         }
     }
@@ -145,51 +157,110 @@ void CopyQueue::showProgressLoop()
         ss << std::fixed << std::setprecision(2) << final;
         std::string str = ss.str();
 
-        // strip trailing zeros
-        if (str.find('.') != std::string::npos)
-        {
-            for (int32_t i = str.size() - 1; i >= 0; i--)
-            {
-                if (str[i] == '0')
-                {
-                    str.resize(str.size() - 1);
-                }
-                else if (str[i] == '.')
-                {
-                    str.resize(str.size() - 1);
-                    break;
-                }
-                else
-                {
-                    break;
-                }
-            }
-        }
-
-        return str + unit;
+        return str + " " + unit;
     };
 
+    auto leftPad = [](const std::string& str, int32_t targetLength)
+    {
+        std::string pad;
+        for (int32_t i = 0; i < targetLength - int32_t(str.length()); i++)
+            pad += " ";
+        return pad + str;
+    };
+
+    auto rightPad = [](const std::string& str, int32_t targetLength)
+    {
+        std::string pad;
+        for (int32_t i = 0; i < targetLength - int32_t(str.length()); i++)
+            pad += " ";
+        return str + pad;
+    };
+
+    bool firstShow = true;
     auto showProgress = [&]()
     {
-        if (int(this->state.load()) >= int(State::AdditionComplete))
-        {
-            int percentDone = this->totalBytesToCopy > 0 ? int(float(this->totalBytesCopied) / float(this->totalBytesToCopy) * 100.0f) : 0;
+        winsize winsize = {};
+        ioctl(STDOUT_FILENO, TIOCGWINSZ, &winsize);
 
-            printf("Copied %s / %s (%d%%)\n",
-                   humanFriendlyFileSize(this->totalBytesCopied).c_str(),
-                   humanFriendlyFileSize(this->totalBytesToCopy).c_str(),
-                   percentDone);
-        }
-        else
+        if (!firstShow)
         {
-            printf("Copied %s / ???\n", humanFriendlyFileSize(this->totalBytesCopied).c_str());
+            // return to start of line, and move three lines up (ie, move cursor to the top left of our draw area)
+            fputs("\r\033[2A", stderr);
         }
+
+        auto showLine = [&](const std::string& line)
+        {
+            fputs((rightPad(line, winsize.ws_col) + "\n").c_str(), stderr);
+        };
+
+        bool haveTotal = int(this->state.load()) >= int(State::AdditionComplete);
+
+        // show raw amount copied
+        {
+            int32_t sectionLength = 10;
+
+            std::string status = leftPad(humanFriendlyFileSize(this->totalBytesCopied), sectionLength) + " / ";
+            if (haveTotal)
+                status += leftPad(humanFriendlyFileSize(this->totalBytesToCopy), sectionLength);
+            else
+                status += leftPad("???", sectionLength);
+
+            // Centre align
+            std::string statusLine;
+            for (int32_t i = 0; i < (winsize.ws_col / 2) - (status.length() / 2); i++)
+                statusLine += " ";
+            statusLine += status;
+
+            showLine(statusLine);
+        }
+
+        // progress bar
+        {
+            float ratio = (haveTotal && this->totalBytesToCopy > 0) ? float(this->totalBytesCopied) / float(this->totalBytesToCopy) : 0;
+            int percentDone = int(ratio * 100.0f);
+
+            int32_t width = winsize.ws_col - 6;
+
+            std::string percentString = haveTotal ? std::to_string(percentDone) : "???";
+            std::string progressBarLine = leftPad(percentString, 3) + "% ";
+
+            int doneChars = int(ratio * width);
+            for (int32_t i = 0; i < width; i++)
+                progressBarLine += i < doneChars ? "█" : "▒";
+
+            showLine(progressBarLine);
+        }
+
+        firstShow = false;
     };
+
+    const float updateIntervalSeconds = 0.25f;
 
     while (!this->isDone())
     {
         showProgress();
-        usleep(1 * 1000000);
+
+        // wait for the specified time, but allow fast exit when we're done (by calling thread unlocking the mutex)
+        {
+            // I hate this data structure...
+            timespec timeoutTime = {};
+            clock_gettime(CLOCK_REALTIME, &timeoutTime);
+            timeoutTime.tv_sec += time_t(std::floor(updateIntervalSeconds));
+            timeoutTime.tv_nsec += long((updateIntervalSeconds - std::floor(updateIntervalSeconds)) * 1000000000.0f);
+            if (timeoutTime.tv_nsec > 1000000000L)
+            {
+                timeoutTime.tv_sec += 1;
+                timeoutTime.tv_nsec -= 1000000000L;
+            }
+
+            int err = pthread_mutex_timedlock(&this->progressEndMutex, &timeoutTime);
+            release_assert(err == 0 || err == ETIMEDOUT);
+            if (err == 0)
+            {
+                pthread_mutex_unlock(&this->progressEndMutex);
+                break;
+            }
+        }
     }
 
     showProgress();
@@ -204,17 +275,35 @@ void CopyQueue::start()
 
     release_assert(pthread_create(&this->submitThread, nullptr, CopyQueue::staticCallSubmitLoop, this) == 0);
     release_assert(pthread_create(&this->completionThread, nullptr, CopyQueue::staticCallCompletionLoop, this) == 0);
-    release_assert(pthread_create(&this->showProgressThread, nullptr, CopyQueue::staticCallShowProgressLoop, this) == 0);
+
+    // Don't try to show a progress bar if we're not outputting to a terminal
+    this->showingProgress = isatty(STDERR_FILENO) && isatty(STDOUT_FILENO) && getenv("TERM");
+    if (this->showingProgress)
+    {
+        pthread_mutex_lock(&this->progressEndMutex);
+        release_assert(pthread_create(&this->showProgressThread, nullptr, CopyQueue::staticCallShowProgressLoop, this) == 0);
+    }
 }
 
-void CopyQueue::join()
+void CopyQueue::join(OnCompletionAction onCompletionAction)
 {
     debug_assert(this->state == State::Running);
     this->state = State::AdditionComplete;
+    this->completionAction = onCompletionAction;
+
+    pthread_join(this->completionThread, nullptr);
+    // completionThread will probably terminate the process for us before we get here.
+    // Check here too just in case, as there is a race on setting this->completionAction.
+    if (this->completionAction == OnCompletionAction::ExitProcessNoCleanup)
+        this->exitProcess();
 
     pthread_join(this->submitThread, nullptr);
-    pthread_join(this->completionThread, nullptr);
-    pthread_join(this->showProgressThread, nullptr);
+
+    if (this->showingProgress)
+    {
+        pthread_mutex_unlock(&this->progressEndMutex); // signals the progress thread to stop sleeping, if it is ATM
+        pthread_join(this->showProgressThread, nullptr);
+    }
     this->state = State::Idle;
 }
 

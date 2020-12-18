@@ -9,6 +9,7 @@
 #include "Assert.hpp"
 #include "CopyRunner.hpp"
 #include "CopyQueue.hpp"
+#include "Config.hpp"
 
 off_t getFileSize(int fd)
 {
@@ -139,7 +140,11 @@ int main(int argc, char** argv)
         addFile(sourceFd, destFd, getFileSize(sourceFd->fd));
     }
 
-    copyQueue->join();
+    CopyQueue::OnCompletionAction completionAction = CopyQueue::OnCompletionAction::Return;
+#if NO_CLEANUP
+    completionAction = CopyQueue::OnCompletionAction::ExitProcessNoCleanup;
+#endif
+    copyQueue->join(completionAction);
 
     return 0;
 }

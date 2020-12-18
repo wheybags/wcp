@@ -3,6 +3,7 @@
 set -euo pipefail
 
 only_wcp="false"
+show_wcp_progress="false"
 bad_arg="false"
 
 while [[ $# -gt 0 ]]; do
@@ -19,6 +20,11 @@ while [[ $# -gt 0 ]]; do
             shift
         ;;
 
+        --show-wcp-progress)
+          show_wcp_progress="true"
+          shift
+        ;;
+
         *)
             bad_arg="true"
             echo "Unrecognised option: $1" >&2
@@ -31,7 +37,8 @@ done
 if [ "$#" -ne 2 ] || [ "$bad_arg" == "true" ]; then
     echo "Usage $0 [OPTION]... [FILE_SIZE] [FILE_COUNT]" >&2
     echo "Options:" >&2
-    echo "  -w|--only-wcp       Don't run other programs for comparison" >&2
+    echo "  -w|--only-wcp         Don't run other programs for comparison" >&2
+    echo "  --show-wcp-progress   Show the wcp progress bar. Hidden by default." >&2
     exit 1
 fi
 
@@ -102,5 +109,10 @@ if [ "$only_wcp" == "false" ]; then
   run_test "rsync -r --inplace -W --no-compress"
 fi
 
-run_test "./build_test/wcp"
+if [ "$show_wcp_progress" == "false" ]; then
+  run_test "./build_test/wcp" 2>/dev/null
+else
+  run_test "./build_test/wcp"
+fi
+
 diff -r "$TEST_DATA" "$TEST_DEST"
