@@ -27,7 +27,8 @@ public:
                std::shared_ptr<FileDescriptor> sourceFd,
                std::shared_ptr<FileDescriptor> destFd,
                off_t offset,
-               off_t size);
+               off_t size,
+               size_t alignment);
     ~CopyRunner();
 
     void addToBatch();
@@ -42,7 +43,10 @@ private:
     std::shared_ptr<FileDescriptor> destFd;
     off_t offset;
     off_t size;
+    size_t alignment;
+
     uint8_t* buffer = nullptr;
+    uint8_t* bufferAligned = nullptr;
 
     off_t readOffset = 0;
     off_t writeOffset = 0;

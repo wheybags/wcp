@@ -11,12 +11,14 @@ CopyRunner::CopyRunner(CopyQueue* queue,
                        std::shared_ptr<FileDescriptor> sourceFd,
                        std::shared_ptr<FileDescriptor> destFd,
                        off_t offset,
-                       off_t size)
+                       off_t size,
+                       size_t alignment)
         : queue(queue)
         , sourceFd(std::move(sourceFd))
         , destFd(std::move(destFd))
         , offset(offset)
         , size(size)
+        , alignment(alignment)
         , readOffset(offset)
         , writeOffset(offset)
 {}
@@ -32,7 +34,19 @@ CopyRunner::~CopyRunner()
 void CopyRunner::addToBatch()
 {
     while(!this->buffer)
-        this->buffer = this->queue->copyBufferHeap.getBlock(); // TODO: we need to align the buffer
+    {
+        this->buffer = this->queue->copyBufferHeap.getBlock();
+
+        if (this->buffer)
+        {
+            // We need to align the buffer because we opened the source file with O_DIRECT.
+            // The calling code should make sure that we have enough space to fit this->size bytes in our heap block
+            // after alignment, but we do some asserts just to be sure.
+            this->bufferAligned = this->buffer + (this->alignment - this->queue->copyBufferHeap.getAlignment());
+            release_assert(intptr_t(this->bufferAligned) % this->alignment == 0);
+            release_assert(this->bufferAligned + this->size <= this->buffer + this->queue->copyBufferHeap.getBlockSize());
+        }
+    }
 
 #if DEBUG_COPY_OPS
     printf("START %d->%d\n", this->sourceFd->fd, this->destFd->fd);
@@ -63,7 +77,21 @@ void CopyRunner::addToBatch()
     {
         io_uring_sqe* sqe = getSqe();
 
-        io_uring_prep_read(sqe, this->sourceFd->fd, this->buffer + this->readOffset - this->offset, bytesToRead, this->readOffset);
+        // Account for O_DIRECT alignment requirements on bytesToRead.
+        // O_DIRECT requires not only the destination buffer to be aligned, but also the byte count.
+        // The only reason we should end up with a bytesToRead value that is not a multiple of alignment is when we are at the
+        // end of a file whose size is not a multiple of alignment. The rules still apply, even at the end of a file.
+        // For example, let's say alignment is 4096, and we are reading a 10-byte long file. We must issue a read of 4096 bytes,
+        // even though we know the file is only 10 bytes long, because the O_DIRECT api requires we do so. Of course, we'll
+        // get a short read, and only 10 bytes will be written, so all is well. It does mean the subsequent write will be cancelled,
+        // but it will go through fine the next time this runner is scheduled, so no problem.
+        if (bytesToRead % this->alignment != 0)
+        {
+            size_t blocks = (bytesToRead / this->alignment) + 1;
+            bytesToRead = blocks * this->alignment;
+        }
+
+        io_uring_prep_read(sqe, this->sourceFd->fd, this->bufferAligned + this->readOffset - this->offset, bytesToRead, this->readOffset);
         sqe->flags |= IOSQE_IO_LINK;
 
         static_assert(sizeof(sqe->user_data) == sizeof(void*));
@@ -82,7 +110,7 @@ void CopyRunner::addToBatch()
 #endif
             io_uring_prep_write(sqe,
                                 this->destFd->fd,
-                                this->buffer + this->writeOffset - this->offset,
+                                this->bufferAligned + this->writeOffset - this->offset,
                                 bytesToWrite,
                                 this->writeOffset);
         };

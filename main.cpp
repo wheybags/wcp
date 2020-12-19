@@ -11,26 +11,6 @@
 #include "CopyQueue.hpp"
 #include "Config.hpp"
 
-off_t getFileSize(int fd)
-{
-    struct stat st;
-
-    release_assert(fstat(fd, &st) >= 0);
-
-    if (S_ISBLK(st.st_mode))
-    {
-        unsigned long long bytes;
-        release_assert(ioctl(fd, BLKGETSIZE64, &bytes) == 0);
-
-        return bytes;
-    }
-    else if (S_ISREG(st.st_mode))
-        return st.st_size;
-
-    release_assert(false);
-    return 0;
-}
-
 static void recursive_mkdir(const char *dir) {
     char tmp[256];
     char *p = NULL;
@@ -54,14 +34,29 @@ CopyQueue* copyQueue = nullptr;
 std::string src;
 std::string dest;
 
-void addFile(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, off_t size)
+void addFile(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, const struct stat64& st)
 {
+    size_t requiredAlignment = st.st_blksize;
+    size_t chunkSize = copyQueue->getBlockSize();
 
-    off_t offset = 0;
-    while (offset != size)
+    // source file is opened with O_DIRECT flag. This means the buffer we read to has to be aligned.
+    // The default heap alignment is pretty high, so we probably won't often need to do this adjustment.
+    if (requiredAlignment > copyQueue->getHeapAlignment())
     {
-        off_t count = std::min(off_t(copyQueue->getBlockSize()), size - offset);
-        copyQueue->addCopyJob(sourceFd, destFd, offset, count);
+        size_t start = requiredAlignment - copyQueue->getHeapAlignment();
+        size_t bytesRemaining = copyQueue->getBlockSize() - start;
+        size_t alignmentBlocks = bytesRemaining / requiredAlignment;
+        chunkSize = alignmentBlocks * requiredAlignment;
+    }
+
+    release_assert(chunkSize > 0);
+
+    // Zero size files are already handled, because the file has been opened for writing before calling this function
+    off_t offset = 0;
+    while (offset != st.st_size)
+    {
+        off_t count = std::min(off_t(chunkSize), st.st_size - offset);
+        copyQueue->addCopyJob(sourceFd, destFd, offset, count, requiredAlignment);
         offset += count;
     }
 }
@@ -83,7 +78,7 @@ static int f(const char* fpath, const struct stat64* sb, int tflag, struct FTW* 
         auto destFd = std::make_shared<FileDescriptor>(open(destPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, sb->st_mode));
         release_assert(destFd->fd > 0);
 
-        addFile(sourceFd, destFd, sb->st_size);
+        addFile(sourceFd, destFd, *sb);
     }
 
     return 0;
@@ -137,7 +132,7 @@ int main(int argc, char** argv)
         auto destFd = std::make_shared<FileDescriptor>(open(dest.c_str(), O_WRONLY | O_CREAT, 0777));
         release_assert(destFd->fd > 0);
 
-        addFile(sourceFd, destFd, getFileSize(sourceFd->fd));
+        addFile(sourceFd, destFd, st);
     }
 
     CopyQueue::OnCompletionAction completionAction = CopyQueue::OnCompletionAction::Return;

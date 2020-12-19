@@ -1,11 +1,14 @@
 #include "Heap.hpp"
 #include "Assert.hpp"
 
-Heap::Heap(size_t blocks, size_t blockSize)
+Heap::Heap(size_t blocks, size_t blockSize, size_t alignment)
     : blocks(blocks)
     , blockSize(blockSize)
+    , alignment(alignment)
 {
-    this->data = (uint8_t*)aligned_alloc(4096, this->blocks * this->blockSize);
+    debug_assert(alignment > 0 && !(alignment & (alignment-1))); // assert align is power of two
+
+    this->data = (uint8_t*)aligned_alloc(this->alignment, this->blocks * this->blockSize);
     this->usedList = new std::atomic_bool[this->blocks];
 }
 
