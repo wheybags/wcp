@@ -36,10 +36,18 @@ std::string dest;
 
 void addFile(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, const struct stat64& st)
 {
+    // Source file is opened with O_DIRECT flag. This means the buffer we read to has to be aligned.
+    // O_DIRECT actually no longer requires us to align to the block size of the filesystem (which is what we're fetching here),
+    // but now allows us to use the block size of the device backing the filesystem. Typical values would be 4096 for the
+    // fs blocksize, and 512 for the device, so we are over-aligning. It can still be faster to use the higher alignment though,
+    // and also there's no easy way to get the backing device's block size. We would need to open() the block device and use
+    // an ioctl to fetch it, but first we need to know which device to use. And then we could run into edge cases with crossing
+    // filesystem boundaries, so we'd need to account for that. We just use the fs blocksize because it's handily available
+    // via stat() on the file, not the block device.
     size_t requiredAlignment = st.st_blksize;
+
     size_t chunkSize = copyQueue->getBlockSize();
 
-    // source file is opened with O_DIRECT flag. This means the buffer we read to has to be aligned.
     // The default heap alignment is pretty high, so we probably won't often need to do this adjustment.
     if (requiredAlignment > copyQueue->getHeapAlignment())
     {
