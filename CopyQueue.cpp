@@ -90,9 +90,9 @@ void CopyQueue::submitLoop()
 
         if (this->isDone())
         {
-#if DEBUG_COPY_OPS
-            puts("SUBMIT THREAD EXIT");
-#endif
+            if (Config::DEBUG_COPY_OPS)
+                puts("SUBMIT THREAD EXIT");
+
             if (nextBuffer)
                 this->copyBufferHeap.returnBlock(nextBuffer);
 
@@ -145,9 +145,8 @@ void CopyQueue::completionLoop()
 
         if (this->isDone())
         {
-#if DEBUG_COPY_OPS
-            puts("COMPLETION THREAD EXIT");
-#endif
+            if (Config::DEBUG_COPY_OPS)
+                puts("COMPLETION THREAD EXIT");
 
             if (completionAction == OnCompletionAction::ExitProcessNoCleanup)
                 this->exitProcess();

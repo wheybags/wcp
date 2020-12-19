@@ -47,9 +47,8 @@ void CopyRunner::addToBatch()
 {
     debug_assert(!this->needsBuffer());
 
-#if DEBUG_COPY_OPS
-    printf("START %d->%d\n", this->sourceFd->fd, this->destFd->fd);
-#endif
+    if (Config::DEBUG_COPY_OPS)
+        printf("START %d->%d\n", this->sourceFd->fd, this->destFd->fd);
 
     debug_assert(this->jobsRunning == 0);
     debug_assert(this->writeOffset <= this->offset + this->size);
@@ -67,11 +66,12 @@ void CopyRunner::addToBatch()
     };
 
     unsigned int bytesToRead = this->offset + this->size - this->readOffset;
-#if DEBUG_FORCE_PARTIAL_READS
-    bytesToRead = rand() % (bytesToRead + 1);
-    unsigned int shortReadSize = bytesToRead;
-    bool readIsPartial = bytesToRead < this->offset + this->size - this->readOffset;
-#endif
+
+    if (Config::DEBUG_FORCE_PARTIAL_READS)
+        bytesToRead = rand() % (bytesToRead + 1);
+
+    bool readForcedPartial = bytesToRead < this->offset + this->size - this->readOffset;
+    unsigned int unalignedReadSize = bytesToRead;
 
     if (bytesToRead)
     {
@@ -97,10 +97,11 @@ void CopyRunner::addToBatch()
         static_assert(sizeof(sqe->user_data) == sizeof(void*));
         sqe->user_data = reinterpret_cast<__u64>(&this->readData);
 
-#if DEBUG_FORCE_PARTIAL_READS
-        if (readIsPartial)
-            this->readData.resultOverride = shortReadSize;
-#endif
+        if (Config::DEBUG_FORCE_PARTIAL_READS)
+        {
+            if (readForcedPartial)
+                this->readData.resultOverride = unalignedReadSize;
+        }
     }
 
     if (this->writeOffset < this->offset + this->size || this->size == 0)
@@ -110,9 +111,9 @@ void CopyRunner::addToBatch()
         auto prepWrite = [&]()
         {
             unsigned int bytesToWrite = this->offset + this->size - this->writeOffset;
-#if DEBUG_FORCE_PARTIAL_WRITES
-            bytesToWrite = rand() % (bytesToWrite + 1);
-#endif
+            if (Config::DEBUG_FORCE_PARTIAL_WRITES)
+                bytesToWrite = rand() % (bytesToWrite + 1);
+
             io_uring_prep_write(sqe,
                                 this->destFd->fd,
                                 this->bufferAligned + this->writeOffset - this->offset,
@@ -120,21 +121,25 @@ void CopyRunner::addToBatch()
                                 this->writeOffset);
         };
 
-#if DEBUG_FORCE_PARTIAL_READS
-        if (readIsPartial)
+        if (Config::DEBUG_FORCE_PARTIAL_READS)
         {
-            // Normally if a read is short, the following write would be cancelled.
-            // To emulate this, we just send a nop event and override its result code to -ECANCELLED.
-            io_uring_prep_nop(sqe);
-            this->writeData.resultOverride = -ECANCELED;
+            if (readForcedPartial)
+            {
+                // Normally if a read is short, the following write would be cancelled.
+                // To emulate this, we just send a nop event and override its result code to -ECANCELLED.
+                io_uring_prep_nop(sqe);
+                this->writeData.resultOverride = -ECANCELED;
+            }
+            else
+            {
+                prepWrite();
+            }
         }
         else
         {
             prepWrite();
         }
-#else
-        prepWrite();
-#endif
+
         sqe->user_data = reinterpret_cast<__u64>(&this->writeData);
     }
 
@@ -156,10 +161,11 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
 
     if (type == EventData::Type::Read)
     {
-#if DEBUG_COPY_OPS
-        printf("RD %d->%d JR:%d RES: %d %s\n",
-               this->sourceFd->fd, this->destFd->fd, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
-#endif
+        if (Config::DEBUG_COPY_OPS)
+        {
+            printf("RD %d->%d JR:%d RES: %d %s\n",
+                   this->sourceFd->fd, this->destFd->fd, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
+        }
         release_assert(result > 0);
         this->readOffset += result;
 
@@ -171,10 +177,11 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
     }
     else
     {
-#if DEBUG_COPY_OPS
-        printf("WT %d->%d JR:%d RES: %d %s\n",
-               this->sourceFd->fd, this->destFd->fd, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
-#endif
+        if (Config::DEBUG_COPY_OPS)
+        {
+            printf("WT %d->%d JR:%d RES: %d %s\n",
+                   this->sourceFd->fd, this->destFd->fd, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
+        }
 
         release_assert(result >= 0 || result == -ECANCELED);
         if (result > 0)

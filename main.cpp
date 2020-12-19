@@ -143,10 +143,9 @@ int main(int argc, char** argv)
         addFile(sourceFd, destFd, st);
     }
 
-    CopyQueue::OnCompletionAction completionAction = CopyQueue::OnCompletionAction::Return;
-#if NO_CLEANUP
-    completionAction = CopyQueue::OnCompletionAction::ExitProcessNoCleanup;
-#endif
+    CopyQueue::OnCompletionAction completionAction = Config::NO_CLEANUP ? CopyQueue::OnCompletionAction::ExitProcessNoCleanup :
+                                                                          CopyQueue::OnCompletionAction::Return;
+
     copyQueue->join(completionAction);
 
     return 0;
