@@ -16,9 +16,7 @@ public:
     explicit CopyQueue(size_t ringSize, size_t heapBlocks, size_t heapBlockSize);
     ~CopyQueue();
 
-    void addCopyJob(std::shared_ptr<FileDescriptor> sourceFd,
-                    std::shared_ptr<FileDescriptor> destFd,
-                    off_t offset, off_t size, size_t alignment);
+    void addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, const struct stat64& st);
     void start();
 
     enum class OnCompletionAction : uint8_t
@@ -26,13 +24,17 @@ public:
         ExitProcessNoCleanup,
         Return
     };
-    void join(OnCompletionAction onCompletionAction);
+    void join(OnCompletionAction onCompletionAction = OnCompletionAction::Return);
 
     size_t getBlockSize() const { return this->copyBufferHeap.getBlockSize(); }
     size_t getHeapAlignment() const { return this->copyBufferHeap.getAlignment(); }
 
 private:
     friend class CopyRunner;
+
+    void addCopyJobPart(std::shared_ptr<FileDescriptor> sourceFd,
+                        std::shared_ptr<FileDescriptor> destFd,
+                        off_t offset, off_t size, size_t alignment);
     void continueCopyJob(CopyRunner* runner);
 
     bool isDone();

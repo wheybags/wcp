@@ -69,6 +69,7 @@ build() {
     cd ..
 }
 
+# This function should do the same thing as getTestDataFolder in tests.cpp. They share cached data.
 generate_data() {
     local test_folder="$1"
     local file_size="$2"
