@@ -11,21 +11,21 @@ Up to 70% faster than cp, depending on the size of the files being copied. The s
 
 20 512MiB files:
 ```
-wcp                                 5.33s  1921.38 MiB/s 3.93 files/s
+wcp                                 4.33s  2365.12 MiB/s 4.84 files/s
 cp -r                               7.86s  1302.92 MiB/s 2.67 files/s
 rsync -r --inplace -W --no-compress 16.10s 636.08  MiB/s 1.30 files/s
 ```
 
 2,000 1MiB files:
 ```
-wcp                                 0.83s 2410.84 MiB/s  2410.84 files/s
+wcp                                 0.77s 2598.70 MiB/s  2598.70 files/s
 cp -r                               1.89s 1058.73 MiB/s  1058.73 files/s
 rsync -r --inplace -W --no-compress 3.24s 617.59  MiB/s  617.59  files/s
 ```
 
 20,000 1KiB files:
 ```
-wcp                                 0.33s 239.39 MiB/s 60609.09 files/s
+wcp                                 0.35s 225.71 MiB/s 57145.71 files/s
 rsync -r --inplace -W --no-compress 0.83s 95.18  MiB/s 24097.59 files/s
 cp -r                               0.94s 84.04  MiB/s 21277.65 files/s
 ```
