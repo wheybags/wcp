@@ -6,7 +6,6 @@
 #include <cerrno>
 #include <cstring>
 
-
 CopyRunner::CopyRunner(CopyQueue* queue,
                        std::shared_ptr<FileDescriptor> sourceFd,
                        std::shared_ptr<FileDescriptor> destFd,
@@ -31,22 +30,22 @@ CopyRunner::~CopyRunner()
         this->queue->copyBufferHeap.returnBlock(this->buffer);
 }
 
+void CopyRunner::giveBuffer(uint8_t* _buffer)
+{
+    debug_assert(this->buffer == nullptr);
+    this->buffer = _buffer;
+
+    // We need to align the buffer because we opened the source file with O_DIRECT.
+    // The calling code should make sure that we have enough space to fit this->size bytes in our heap block
+    // after alignment, but we do some asserts just to be sure.
+    this->bufferAligned = this->buffer + (this->alignment - this->queue->copyBufferHeap.getAlignment());
+    release_assert(intptr_t(this->bufferAligned) % this->alignment == 0);
+    release_assert(this->bufferAligned + this->size <= this->buffer + this->queue->copyBufferHeap.getBlockSize());
+}
+
 void CopyRunner::addToBatch()
 {
-    while(!this->buffer)
-    {
-        this->buffer = this->queue->copyBufferHeap.getBlock();
-
-        if (this->buffer)
-        {
-            // We need to align the buffer because we opened the source file with O_DIRECT.
-            // The calling code should make sure that we have enough space to fit this->size bytes in our heap block
-            // after alignment, but we do some asserts just to be sure.
-            this->bufferAligned = this->buffer + (this->alignment - this->queue->copyBufferHeap.getAlignment());
-            release_assert(intptr_t(this->bufferAligned) % this->alignment == 0);
-            release_assert(this->bufferAligned + this->size <= this->buffer + this->queue->copyBufferHeap.getBlockSize());
-        }
-    }
+    debug_assert(!this->needsBuffer());
 
 #if DEBUG_COPY_OPS
     printf("START %d->%d\n", this->sourceFd->fd, this->destFd->fd);
@@ -70,6 +69,7 @@ void CopyRunner::addToBatch()
     unsigned int bytesToRead = this->offset + this->size - this->readOffset;
 #if DEBUG_FORCE_PARTIAL_READS
     bytesToRead = rand() % (bytesToRead + 1);
+    unsigned int shortReadSize = bytesToRead;
     bool readIsPartial = bytesToRead < this->offset + this->size - this->readOffset;
 #endif
 
@@ -96,6 +96,11 @@ void CopyRunner::addToBatch()
 
         static_assert(sizeof(sqe->user_data) == sizeof(void*));
         sqe->user_data = reinterpret_cast<__u64>(&this->readData);
+
+#if DEBUG_FORCE_PARTIAL_READS
+        if (readIsPartial)
+            this->readData.resultOverride = shortReadSize;
+#endif
     }
 
     if (this->writeOffset < this->offset + this->size || this->size == 0)
@@ -117,16 +122,16 @@ void CopyRunner::addToBatch()
 
 #if DEBUG_FORCE_PARTIAL_READS
         if (readIsPartial)
-            {
-                // Normally if a read is short, the following write would be cancelled.
-                // To emulate this, we just send a nop event and override its result code to -ECANCELLED.
-                io_uring_prep_nop(sqe);
-                this->writeData.resultOverride = -ECANCELED;
-            }
-            else
-            {
-                prepWrite();
-            }
+        {
+            // Normally if a read is short, the following write would be cancelled.
+            // To emulate this, we just send a nop event and override its result code to -ECANCELLED.
+            io_uring_prep_nop(sqe);
+            this->writeData.resultOverride = -ECANCELED;
+        }
+        else
+        {
+            prepWrite();
+        }
 #else
         prepWrite();
 #endif
@@ -147,7 +152,6 @@ void CopyRunner::addToBatch()
 bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
 {
     this->jobsRunning--;
-    this->queue->submissionsRunning--;
     debug_assert(jobsRunning >= 0);
 
     if (type == EventData::Type::Read)
@@ -158,6 +162,12 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
 #endif
         release_assert(result > 0);
         this->readOffset += result;
+
+        // If we're not at the end of the file, and we read up to a non-aligned offset, then back up until
+        // we're aligned again. This probably won't happen in the real world, but the DEBUG_FORCE_PARTIAL_READS mode
+        // does make it happen, so we handle it. Also it's not guaranteed to never happen for real.
+        if (this->offset + this->size - this->readOffset)
+            this->readOffset = (this->readOffset / this->alignment) * this->alignment;
     }
     else
     {

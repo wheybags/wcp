@@ -3,6 +3,7 @@
 #include <vector>
 #include <cstdint>
 #include <atomic>
+#include <pthread.h>
 
 // Thread safe slab allocator
 class Heap
@@ -17,8 +18,12 @@ public:
     uint8_t* getBlock();
     void returnBlock(const uint8_t* block);
 
+    size_t getBlockCount() const { return this->blocks; }
     size_t getBlockSize() const { return this->blockSize; }
     size_t getAlignment() const { return this->alignment; }
+
+    // NOT thread safe
+    size_t getFreeBlocksCount() const;
 
 private:
     std::atomic_bool* usedList;

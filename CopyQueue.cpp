@@ -42,6 +42,8 @@ void CopyQueue::submitLoop()
 {
     pthread_setname_np(pthread_self(), "Submit thread");
 
+    uint8_t* nextBuffer = nullptr;
+
     // TODO: avoid busy looping? Or maybe it's fine? Not really sure tbh.
     while (true)
     {
@@ -49,18 +51,40 @@ void CopyQueue::submitLoop()
               // Rate limit to avoid overflowing the completion queue
               (this->completionRingSize - this->submissionsRunning) >= CopyRunner::MAX_JOBS_PER_RUNNER)
         {
+            if (!nextBuffer)
+                nextBuffer = this->copyBufferHeap.getBlock();
+
             CopyRunner* toAdd = nullptr;
             pthread_mutex_lock(&this->copiesPendingStartMutex);
             {
-                debug_assert(!this->copiesPendingStart.empty());
-                toAdd = this->copiesPendingStart.back();
-                this->copiesPendingStart.pop_back();
+                debug_assert(!this->copiesPendingContinue.empty() || !this->copiesPendingStart.empty());
+
+                if (!this->copiesPendingContinue.empty())
+                {
+                    toAdd = this->copiesPendingContinue.back();
+                    debug_assert(!toAdd->needsBuffer());
+
+                    this->copiesPendingContinue.pop_back();
+                }
+                else if (nextBuffer)
+                {
+                    CopyRunner* temp = this->copiesPendingStart.back();
+                    debug_assert(temp->needsBuffer());
+
+                    temp->giveBuffer(nextBuffer);
+                    nextBuffer = nullptr;
+                    toAdd = temp;
+
+                    this->copiesPendingStart.pop_back();
+                }
             }
             pthread_mutex_unlock(&this->copiesPendingStartMutex);
 
-
-            toAdd->addToBatch(); // This might block for a while, if all the heap blocks are already in use
-            this->copiesPendingStartCount--;
+            if (toAdd)
+            {
+                toAdd->addToBatch();
+                this->copiesPendingStartCount--;
+            }
         }
 
         if (this->isDone())
@@ -68,6 +92,9 @@ void CopyQueue::submitLoop()
 #if DEBUG_COPY_OPS
             puts("SUBMIT THREAD EXIT");
 #endif
+            if (nextBuffer)
+                this->copyBufferHeap.returnBlock(nextBuffer);
+
             return;
         }
     }
@@ -92,9 +119,18 @@ void CopyQueue::completionLoop()
 
             auto *eventData = reinterpret_cast<CopyRunner::EventData *>(cqe->user_data);
             __s32 result = cqe->res;
-            if (eventData->resultOverride)
-                result = eventData->resultOverride;
-            eventData->resultOverride = 0;
+            if (eventData->resultOverride != std::numeric_limits<__s32>::max())
+            {
+                // Don't allow spoofing to drop a real error
+                if (cqe->res >= 0)
+                {
+                    // only allow spoofing an error, or a shorter-than-real io event, never a longer-than-real one.
+                    if (eventData->resultOverride < 0 || eventData->resultOverride <= cqe->res)
+                        result = eventData->resultOverride;
+                }
+
+                eventData->resultOverride = std::numeric_limits<__s32>::max();
+            }
 
             if (eventData->copyData->onCompletionEvent(eventData->type, result))
             {
@@ -103,6 +139,7 @@ void CopyQueue::completionLoop()
             }
 
             io_uring_cqe_seen(&ring, cqe);
+            this->submissionsRunning--;
         }
 
         if (this->isDone())
@@ -297,6 +334,9 @@ void CopyQueue::join(OnCompletionAction onCompletionAction)
     if (this->completionAction == OnCompletionAction::ExitProcessNoCleanup)
         this->exitProcess();
 
+    debug_assert(this->submissionsRunning == 0);
+    debug_assert(this->copyBufferHeap.getFreeBlocksCount() == this->copyBufferHeap.getBlockCount());
+
     pthread_join(this->submitThread, nullptr);
 
     if (this->showingProgress)
@@ -329,7 +369,7 @@ void CopyQueue::continueCopyJob(CopyRunner* runner)
     pthread_mutex_lock(&this->copiesPendingStartMutex);
     {
         this->copiesPendingStartCount++;
-        this->copiesPendingStart.push_back(runner);
+        this->copiesPendingContinue.push_back(runner);
     }
     pthread_mutex_unlock(&this->copiesPendingStartMutex);
 }

@@ -31,6 +31,13 @@ public:
                size_t alignment);
     ~CopyRunner();
 
+    CopyRunner() = delete;
+    CopyRunner(const CopyRunner&) = delete;
+    CopyRunner& operator=(const CopyRunner&) = delete;
+
+    bool needsBuffer() const { return this->buffer == nullptr; }
+    void giveBuffer(uint8_t* buffer);
+
     void addToBatch();
     bool onCompletionEvent(EventData::Type type, __s32 result);
 
@@ -53,7 +60,7 @@ private:
 
     int32_t jobsRunning = 0;
 
-    EventData readData {this, 0, EventData::Type::Read};
-    EventData writeData {this, 0, EventData::Type::Write};
+    EventData readData {this, std::numeric_limits<__s32>::max(), EventData::Type::Read};
+    EventData writeData {this, std::numeric_limits<__s32>::max(), EventData::Type::Write};
 };
 

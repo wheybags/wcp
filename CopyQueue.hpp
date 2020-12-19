@@ -56,6 +56,7 @@ private:
     io_uring ring = {};
 
     std::vector<CopyRunner*> copiesPendingStart;
+    std::vector<CopyRunner*> copiesPendingContinue;
     pthread_mutexattr_t mutexAttrs;
     pthread_mutex_t copiesPendingStartMutex;
 
