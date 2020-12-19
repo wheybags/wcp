@@ -9,9 +9,10 @@
 CopyQueue::CopyQueue(size_t ringSize, size_t heapBlocks, size_t heapBlockSize)
     : copyBufferHeap(heapBlocks, heapBlockSize)
     , ringSize(ringSize)
-    , completionRingSize(ringSize * 2) // TODO: I think this is right, need to confirm)
 {
-    release_assert(io_uring_queue_init(this->ringSize, &this->ring, 0) == 0);
+    io_uring_params params = {};
+    release_assert(io_uring_queue_init_params(this->ringSize, &this->ring, &params) == 0);
+    this->completionRingSize = params.cq_entries;
 
     release_assert(pthread_mutexattr_init(&this->mutexAttrs) == 0);
     release_assert(pthread_mutexattr_settype(&this->mutexAttrs, PTHREAD_MUTEX_ADAPTIVE_NP) == 0);
