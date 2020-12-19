@@ -4,6 +4,7 @@ set -euo pipefail
 
 only_wcp="false"
 show_wcp_progress="false"
+output_csv="false"
 bad_arg="false"
 
 while [[ $# -gt 0 ]]; do
@@ -25,6 +26,11 @@ while [[ $# -gt 0 ]]; do
           shift
         ;;
 
+        --csv)
+          output_csv="true"
+          shift
+        ;;
+
         *)
             bad_arg="true"
             echo "Unrecognised option: $1" >&2
@@ -39,6 +45,7 @@ if [ "$#" -ne 2 ] || [ "$bad_arg" == "true" ]; then
     echo "Options:" >&2
     echo "  -w|--only-wcp         Don't run other programs for comparison" >&2
     echo "  --show-wcp-progress   Show the wcp progress bar. Hidden by default." >&2
+    echo "  --csv                 Output csv format instead of normal text." >&2
     exit 1
 fi
 
@@ -47,6 +54,12 @@ FILE_COUNT=$2
 
 TEST_DATA="./test_data/$FILE_SIZE""_$FILE_COUNT"
 TEST_DEST="./test_dest"
+
+message() {
+    if [ "$output_csv" == "false" ]; then
+      echo $@
+    fi
+}
 
 build() {
     mkdir -p build_test
@@ -62,14 +75,14 @@ generate_data() {
     local count="$3"
 
     for i in $(seq 1 "$count"); do
-        echo "    Generating file $i/$count"
+        message "    Generating file $i/$count"
         mkdir -p "$test_folder/$file_size"
         chronic dd if=/dev/urandom of="$test_folder/$file_size/$i" bs="$file_size" count=1 2>&1
     done
 }
 
 run_test() {
-    echo -n "Preparing for test... "
+    message -n "Preparing for test... "
 
     if [ -e "$TEST_DEST" ]; then
         rm -rf "$TEST_DEST"
@@ -77,23 +90,33 @@ run_test() {
     
     sync
     sudo bash -c "echo 3 > /proc/sys/vm/drop_caches"
-    echo "done"
+    message "done"
 
-    echo -n "testing $*... "
+    message -n "testing $*... "
     /usr/bin/time -o /tmp/wcp_bench_ts_temp -f "%e" $@ "$TEST_DATA"/ "$TEST_DEST"/
-    echo "done"
+    message "done"
 
     local seconds
     local mibps
     local filesps
     seconds=$(cat /tmp/wcp_bench_ts_temp)
-    mibps=$(echo "scale=2;($TOTAL_SIZE)/$seconds" | bc)
-    filesps=$(echo "scale=2;($TOTAL_FILE_COUNT)/$seconds" | bc)
-    echo -e "    $seconds""s\t$mibps MiB/s\t$filesps files/s"
+    if [ "$seconds" == "0.00" ]; then
+      mibps="NaN"
+      filesps="NaN"
+    else
+      mibps=$(echo "scale=2;($TOTAL_SIZE)/$seconds" | bc)
+      filesps=$(echo "scale=2;($TOTAL_FILE_COUNT)/$seconds" | bc)
+    fi
+
+    if [ "$output_csv" == "false" ]; then
+      echo -e "    $seconds""s\t$mibps MiB/s\t$filesps files/s"
+    else
+      echo -e $@",$seconds,$mibps,$filesps"
+    fi
 }
 
 if [ ! -e "$TEST_DATA/done_tag" ]; then
-    echo "Generating test data..."
+    message "Generating test data..."
     rm -rf "$TEST_DATA"
     generate_data "$TEST_DATA" "$FILE_SIZE" "$FILE_COUNT"
     touch "$TEST_DATA/done_tag"
