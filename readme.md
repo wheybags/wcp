@@ -4,7 +4,7 @@ wcp is an experiment in re-implementing something like the standard cp file copy
 Linux only, for now. It should work on any kernel >= 5.6, but I've only tested on 5.8.
 
 ## Status
-wcp can copy files. Very fast. And show a nice progress bar.
+wcp can copy files. Very fast. And show a nice progress bar (but not nice enough). It's not robust enough for daily use just yet.
 [![asciicast](https://asciinema.org/a/OWNRm4MJdgO1WCvHixughpplO.svg)](https://asciinema.org/a/OWNRm4MJdgO1WCvHixughpplO)
 
 ## How fast?
