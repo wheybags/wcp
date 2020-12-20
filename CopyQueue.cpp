@@ -1,10 +1,14 @@
 #include <iomanip>
 #include <sys/ioctl.h>
+#include <fcntl.h>
+#include <dirent.h>
 #include <cmath>
+#include <cstring>
 #include "CopyQueue.hpp"
 #include "Assert.hpp"
 #include "CopyRunner.hpp"
 #include "Config.hpp"
+#include "Util.hpp"
 
 CopyQueue::CopyQueue(size_t ringSize, size_t heapBlocks, size_t heapBlockSize)
     : copyBufferHeap(heapBlocks, heapBlockSize)
@@ -345,6 +349,113 @@ void CopyQueue::join(OnCompletionAction onCompletionAction)
         pthread_join(this->showProgressThread, nullptr);
     }
     this->state = State::Idle;
+}
+
+void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
+{
+    // Taken from the manpage for getdents64() https://man7.org/linux/man-pages/man2/getdents64.2.html
+    struct linux_dirent64
+    {
+        ino64_t        d_ino;    /* 64-bit inode number */
+        off64_t        d_off;    /* 64-bit offset to next structure */
+        unsigned short d_reclen; /* Size of this dirent */
+        unsigned char  d_type;   /* File type */
+        char           d_name[]; /* Filename (null-terminated) */
+    };
+
+    recursiveMkdir(dest);
+
+    release_assert(from.length() > 0);
+    if (from[from.length() - 1] == '/')
+        from.resize(from.length() - 1);
+
+    std::vector<std::string> directoryStack;
+    directoryStack.emplace_back(from);
+
+    std::vector<uint8_t> dirBuffer;
+    dirBuffer.resize(1024 * 1024 * 32); // 32mb, should be enough for a one-shot almost always
+
+    while (!directoryStack.empty())
+    {
+        std::string current = std::move(directoryStack.back());
+        directoryStack.pop_back();
+
+        FileDescriptor currentFd(open(current.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+        release_assert(currentFd.fd > 0);
+
+        ssize_t ret = 0;
+        do
+        {
+            ret = getdents64(currentFd.fd, dirBuffer.data(), dirBuffer.size());
+            release_assert(ret >= 0);
+
+            uint8_t* nextPtr = dirBuffer.data();
+            while (nextPtr < dirBuffer.data() + ret)
+            {
+                linux_dirent64* currentEntry = reinterpret_cast<linux_dirent64*>(nextPtr);
+                nextPtr += currentEntry->d_reclen;
+
+                std::string fullPath(current + "/" + currentEntry->d_name);
+
+                unsigned char type = currentEntry->d_type;
+
+                struct stat64 sb = {};
+                bool didStat = false;
+
+                if (currentEntry->d_type == DT_UNKNOWN)
+                {
+                    release_assert(stat64(fullPath.c_str(), &sb) == 0);
+                    didStat = true;
+
+                    if (S_ISFIFO(sb.st_mode))
+                        type = DT_FIFO;
+                    else if (S_ISCHR(sb.st_mode))
+                        type = DT_CHR;
+                    else if (S_ISDIR(sb.st_mode))
+                        type = DT_DIR;
+                    else if (S_ISREG(sb.st_mode))
+                        type = DT_REG;
+                    else if (S_ISLNK(sb.st_mode))
+                        type = DT_LNK;
+                    else if (S_ISSOCK(sb.st_mode))
+                        type = DT_SOCK;
+                }
+
+                std::string destPath = dest + (fullPath.data() + from.length());
+
+                if (type == DT_DIR)
+                {
+                    if (strcmp(currentEntry->d_name, ".") != 0 && strcmp(currentEntry->d_name, "..") != 0)
+                    {
+                        recursiveMkdir(destPath);
+                        directoryStack.emplace_back(std::move(fullPath));
+                    }
+                }
+                else if (type == DT_REG)
+                {
+                    if (!didStat)
+                    {
+                        release_assert(stat64(fullPath.c_str(), &sb) == 0);
+                        didStat = true;
+                    }
+
+                    // TODO: even though we've bumped the concurrent open files limit a lot, we should still probably
+                    // try to make sure we don't exceed it.
+                    auto sourceFd = std::make_shared<FileDescriptor>(open(fullPath.c_str(), O_RDONLY | O_DIRECT | O_CLOEXEC));
+                    release_assert(sourceFd->fd > 0);
+                    auto destFd = std::make_shared<FileDescriptor>(open(destPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, sb.st_mode));
+                    release_assert(destFd->fd > 0);
+
+                    this->addCopyJob(sourceFd, destFd, sb);
+                }
+                else
+                {
+                    release_assert(false); // not handled yet
+                }
+            }
+
+        } while (ret != 0);
+    }
 }
 
 void CopyQueue::addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, const struct stat64& st)
