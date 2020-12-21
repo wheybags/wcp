@@ -2,9 +2,11 @@
 
 set -euo pipefail
 
+base_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+
 only_wcp="false"
 show_wcp_progress="false"
-output_csv="false"
+time_only="false"
 bad_arg="false"
 
 while [[ $# -gt 0 ]]; do
@@ -26,8 +28,9 @@ while [[ $# -gt 0 ]]; do
           shift
         ;;
 
-        --csv)
-          output_csv="true"
+        --time-only)
+          time_only="true"
+          only_wcp="true"
           shift
         ;;
 
@@ -45,28 +48,31 @@ if [ "$#" -ne 2 ] || [ "$bad_arg" == "true" ]; then
     echo "Options:" >&2
     echo "  -w|--only-wcp         Don't run other programs for comparison" >&2
     echo "  --show-wcp-progress   Show the wcp progress bar. Hidden by default." >&2
-    echo "  --csv                 Output csv format instead of normal text." >&2
+    echo "  --time-only           Output only the time of wcp. Implies -w." >&2
     exit 1
 fi
 
 FILE_SIZE=$1
 FILE_COUNT=$2
 
-TEST_DATA="./test_data/$FILE_SIZE""_$FILE_COUNT"
-TEST_DEST="./test_dest"
+TEST_DATA="$base_dir/test_data/$FILE_SIZE""_$FILE_COUNT"
+TEST_DEST="$base_dir/test_dest"
 
 message() {
-    if [ "$output_csv" == "false" ]; then
+    if [ "$time_only" == "false" ]; then
       echo $@
     fi
 }
 
 build() {
+    pushd "$base_dir" > /dev/null
+
     mkdir -p build_test
     cd build_test
     chronic cmake .. -DCMAKE_BUILD_TYPE=Release
     chronic make -j "$(grep -c processor /proc/cpuinfo)"
-    cd ..
+
+    popd > /dev/null
 }
 
 # This function should do the same thing as getTestDataFolder in tests.cpp. They share cached data.
@@ -109,10 +115,10 @@ run_test() {
       filesps=$(echo "scale=2;($TOTAL_FILE_COUNT)/$seconds" | bc)
     fi
 
-    if [ "$output_csv" == "false" ]; then
+    if [ "$time_only" == "false" ]; then
       echo -e "    $seconds""s\t$mibps MiB/s\t$filesps files/s"
     else
-      echo -e $@",$seconds,$mibps,$filesps"
+      echo -e "$seconds"
     fi
 }
 

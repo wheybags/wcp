@@ -1,5 +1,6 @@
 test_data
 test_dest
+perf_data
 build*
 cmake-build*
 .idea
