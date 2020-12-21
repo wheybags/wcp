@@ -11,8 +11,8 @@
 #include "Util.hpp"
 
 CopyQueue::CopyQueue(size_t ringSize, size_t heapBlocks, size_t heapBlockSize)
-    : copyBufferHeap(heapBlocks, heapBlockSize)
-    , ringSize(ringSize)
+    : ringSize(ringSize)
+    , copyBufferHeap(heapBlocks, heapBlockSize)
 {
     io_uring_params params = {};
     release_assert(io_uring_queue_init_params(this->ringSize, &this->ring, &params) == 0);
@@ -248,7 +248,7 @@ void CopyQueue::showProgressLoop()
 
             // Centre align
             std::string statusLine;
-            for (int32_t i = 0; i < (winsize.ws_col / 2) - (status.length() / 2); i++)
+            for (uint32_t i = 0; i < (winsize.ws_col / 2) - (status.length() / 2); i++)
                 statusLine += " ";
             statusLine += status;
 
@@ -362,11 +362,11 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
     // Taken from the manpage for getdents64() https://man7.org/linux/man-pages/man2/getdents64.2.html
     struct linux_dirent64
     {
-        ino64_t        d_ino;    /* 64-bit inode number */
-        off64_t        d_off;    /* 64-bit offset to next structure */
-        unsigned short d_reclen; /* Size of this dirent */
-        unsigned char  d_type;   /* File type */
-        char           d_name[]; /* Filename (null-terminated) */
+        ino64_t             d_ino;    /* 64-bit inode number */
+        off64_t             d_off;    /* 64-bit offset to next structure */
+        unsigned short      d_reclen; /* Size of this dirent */
+        unsigned char       d_type;   /* File type */
+        __extension__ char  d_name[]; /* Filename (null-terminated). __extension__ allows use of flexible array members in g++ (normally only allowed in plain C) */
     };
 
     recursiveMkdir(dest);

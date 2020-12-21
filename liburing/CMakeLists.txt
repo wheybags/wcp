@@ -9,4 +9,4 @@ add_library(Uring
     src/include/liburing/io_uring.h
     )
 
-target_include_directories(Uring PUBLIC src/include)
+target_include_directories(Uring SYSTEM PUBLIC src/include)

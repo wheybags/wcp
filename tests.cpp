@@ -2,11 +2,15 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <spawn.h>
-#include "acutest.h"
 #include "CopyQueue.hpp"
 #include "Config.hpp"
 #include "Util.hpp"
 #include "wcpMain.hpp"
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wclobbered"
+#include "acutest.h"
+#pragma GCC diagnostic pop
 
 std::string getProjectBasePath()
 {
