@@ -3,7 +3,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
-void recursiveMkdir(std::string path)
+void recursiveMkdir(std::string& path)
 {
     auto mkdirOne = [](const char* onePath)
     {

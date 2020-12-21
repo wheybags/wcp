@@ -351,9 +351,13 @@ void CopyQueue::join(OnCompletionAction onCompletionAction)
     this->state = State::Idle;
 }
 
-void CopyQueue::addRecursiveCopy(const std::filesystem::path& from, const std::filesystem::path& dest)
+void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
 {
     debug_assert(!from.empty() && !dest.empty());
+    if (from.back() != '/')
+        from += '/';
+    if (dest.back() != '/')
+        dest += '/';
 
     // Taken from the manpage for getdents64() https://man7.org/linux/man-pages/man2/getdents64.2.html
     struct linux_dirent64
@@ -365,9 +369,9 @@ void CopyQueue::addRecursiveCopy(const std::filesystem::path& from, const std::f
         char           d_name[]; /* Filename (null-terminated) */
     };
 
-    recursiveMkdir(dest.string());
+    recursiveMkdir(dest);
 
-    std::vector<std::filesystem::path> directoryStack;
+    std::vector<std::string> directoryStack;
     directoryStack.emplace_back(from);
 
     std::vector<uint8_t> dirBuffer;
@@ -375,7 +379,7 @@ void CopyQueue::addRecursiveCopy(const std::filesystem::path& from, const std::f
 
     while (!directoryStack.empty())
     {
-        std::filesystem::path current = std::move(directoryStack.back());
+        std::string current = std::move(directoryStack.back());
         directoryStack.pop_back();
 
         FileDescriptor currentFd(open(current.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
@@ -393,7 +397,7 @@ void CopyQueue::addRecursiveCopy(const std::filesystem::path& from, const std::f
                 linux_dirent64* currentEntry = reinterpret_cast<linux_dirent64*>(nextPtr);
                 nextPtr += currentEntry->d_reclen;
 
-                std::filesystem::path fullPath = current / currentEntry->d_name;
+                std::string fullPath = current + currentEntry->d_name;
 
                 unsigned char type = currentEntry->d_type;
 
@@ -419,13 +423,14 @@ void CopyQueue::addRecursiveCopy(const std::filesystem::path& from, const std::f
                         type = DT_SOCK;
                 }
 
-                std::filesystem::path destPath = dest / std::filesystem::relative(fullPath, from);
+                std::string destPath = dest + (fullPath.data() + from.length());
 
                 if (type == DT_DIR)
                 {
                     if (strcmp(currentEntry->d_name, ".") != 0 && strcmp(currentEntry->d_name, "..") != 0)
                     {
-                        recursiveMkdir(destPath.string());
+                        recursiveMkdir(destPath);
+                        fullPath += '/';
                         directoryStack.emplace_back(std::move(fullPath));
                     }
                 }
