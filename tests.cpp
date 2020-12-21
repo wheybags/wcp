@@ -5,6 +5,7 @@
 #include "CopyQueue.hpp"
 #include "Config.hpp"
 #include "Util.hpp"
+#include "wcpMain.hpp"
 
 std::string getProjectBasePath()
 {
@@ -32,6 +33,8 @@ std::unique_ptr<CopyQueue> getTestQueue()
 
 void runWithAllPartialModes(const std::function<void(void)>& func)
 {
+    Config::NO_CLEANUP = false;
+
     {
         Config::DEBUG_FORCE_PARTIAL_READS = false;
         Config::DEBUG_FORCE_PARTIAL_WRITES = false;
@@ -211,8 +214,68 @@ void test_CopySmallFileNotAlignedSize()
     });
 }
 
+void test_ResolveCopyDestination()
+{
+    Config::DEBUG_FORCE_PARTIAL_READS = false;
+    Config::DEBUG_FORCE_PARTIAL_WRITES = false;
+    Config::NO_CLEANUP = false;
+
+    std::string base = getProjectBasePath() + "/test_data/TestResolveCopyDestination";
+    std::string source = base + "/source";
+    std::string dest = base + "/dest";
+    std::string contentFile = source + "/content_file";
+
+    // set up a clean copy of our source folder, containing a single file "content_file"
+    {
+        std::filesystem::remove_all(base);
+        recursiveMkdir(base);
+
+        TEST_ASSERT(mkdir(source.c_str(), S_IRWXU) == 0);
+
+        FILE* f = fopen(contentFile.c_str(), "wb");
+        TEST_ASSERT(f != nullptr);
+        TEST_ASSERT(fclose(f) == 0);
+    }
+
+    auto call = [](const std::string& a, const std::string& b)
+    {
+        int argc = 3;
+        const char *argv[] = {"wcp", a.c_str(), b.c_str(), nullptr};
+        wcpMain(argc, (char**)argv);
+    };
+
+    call(source, dest);
+    TEST_ASSERT(access((dest + "/source/content_file").c_str(), F_OK) == 0);
+
+    std::filesystem::remove_all(dest);
+    call(source + "/", dest);
+    TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
+
+    std::filesystem::remove_all(dest);
+    call(source, dest + "/");
+    TEST_ASSERT(access((dest + "/source/content_file").c_str(), F_OK) == 0);
+
+    std::filesystem::remove_all(dest);
+    call(source + "/", dest + "/");
+    TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
+
+    std::filesystem::remove_all(dest);
+    call(source + "/.", dest);
+    TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
+
+    std::filesystem::remove_all(dest);
+    call(contentFile, dest);
+    TEST_ASSERT(access(dest.c_str(), F_OK) == 0);
+
+    std::filesystem::remove_all(dest);
+    TEST_ASSERT(mkdir(dest.c_str(), S_IRWXU) == 0);
+    call(contentFile, dest);
+    TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
+}
+
 TEST_LIST =
 {
     {"CopySmallFileNotAlignedSize", test_CopySmallFileNotAlignedSize},
+    {"ResolveCopyDestination", test_ResolveCopyDestination},
     {nullptr, nullptr }
 };

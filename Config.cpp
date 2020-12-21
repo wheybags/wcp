@@ -6,7 +6,7 @@ namespace Config
     bool DEBUG_FORCE_PARTIAL_READS = false;
     bool DEBUG_FORCE_PARTIAL_WRITES = false;
 
-    const bool NO_CLEANUP =
+    bool NO_CLEANUP =
 #ifdef NDEBUG
         true;
 #else

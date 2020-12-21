@@ -5,7 +5,7 @@ project(wcp)
 
 add_subdirectory(liburing)
 
-add_library(wcp_lib CopyRunner.cpp CopyRunner.hpp Assert.hpp Config.hpp CopyQueue.cpp CopyQueue.hpp FileDescriptor.hpp Heap.hpp Heap.cpp Config.cpp tests.cpp Util.hpp Util.cpp)
+add_library(wcp_lib CopyRunner.cpp CopyRunner.hpp Assert.hpp Config.hpp CopyQueue.cpp CopyQueue.hpp FileDescriptor.hpp Heap.hpp Heap.cpp Config.cpp tests.cpp Util.hpp Util.cpp wcpMain.cpp wcpMain.hpp)
 
 find_package(Threads)
 target_link_libraries(wcp_lib Uring ${CMAKE_THREAD_LIBS_INIT})
