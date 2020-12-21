@@ -5,6 +5,7 @@
 #include <atomic>
 #include <vector>
 #include <memory>
+#include <filesystem>
 #include "FileDescriptor.hpp"
 #include "Heap.hpp"
 
@@ -16,7 +17,7 @@ public:
     explicit CopyQueue(size_t ringSize, size_t heapBlocks, size_t heapBlockSize);
     ~CopyQueue();
 
-    void addRecursiveCopy(std::string from, std::string dest);
+    void addRecursiveCopy(const std::filesystem::path& from, const std::filesystem::path& dest);
     void addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, const struct stat64& st);
     void start();
 
