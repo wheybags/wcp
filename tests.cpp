@@ -1,6 +1,7 @@
 #include <functional>
 #include <fcntl.h>
 #include <filesystem>
+#include <spawn.h>
 #include "acutest.h"
 #include "CopyQueue.hpp"
 #include "Config.hpp"
@@ -178,6 +179,18 @@ void assertFilesEqual(const std::string& a, const std::string& b)
     TEST_ASSERT(aData == bData);
 }
 
+void assertFoldersEqual(const std::string& a, const std::string& b)
+{
+    // We just spawn diff, it's a known good implementation
+    const char* argv[] = {"/usr/bin/diff", "-r", a.c_str(), b.c_str(), nullptr};
+
+    pid_t pid = 0;
+    int err = posix_spawn(&pid, argv[0], nullptr, nullptr, (char**)argv, environ);
+    TEST_ASSERT(err == 0);
+    TEST_ASSERT(waitpid(pid, &err, 0) != -1);
+    TEST_ASSERT(err == 0);
+}
+
 void clearTargetFile(const std::string& path)
 {
     errno = 0;
@@ -211,6 +224,23 @@ void test_CopySmallFileNotAlignedSize()
         }
 
         assertFilesEqual(srcFile, destPath);
+    });
+}
+
+void test_CopyLargeFolder()
+{
+    runWithAllPartialModes([]()
+    {
+        std::unique_ptr<CopyQueue> queue = getTestQueue();
+        std::string srcFolder = getTestDataFolder(1024 * 1024 * 512, 5);
+        std::string destPath = getProjectBasePath() + "/test_dest";
+
+        std::filesystem::remove_all(destPath);
+
+        queue->addRecursiveCopy(srcFolder, destPath);
+        queue->join();
+
+        assertFoldersEqual(srcFolder, destPath);
     });
 }
 
@@ -277,5 +307,6 @@ TEST_LIST =
 {
     {"CopySmallFileNotAlignedSize", test_CopySmallFileNotAlignedSize},
     {"ResolveCopyDestination", test_ResolveCopyDestination},
+    {"CopyLargeFolder", test_CopyLargeFolder},
     {nullptr, nullptr }
 };
