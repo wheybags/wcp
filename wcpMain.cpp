@@ -1,6 +1,7 @@
 #include <sys/stat.h>
 #include <sys/resource.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include <cstring>
 #include <string>
 #include <filesystem>
@@ -24,11 +25,25 @@ int wcpMain(int argc, char** argv)
     std::filesystem::path dest = argv[2];
     release_assert(!src.empty() && !dest.empty());
 
+    // Linux has stupidly low default limits for concurrently open files (1024 file descriptors).
+    // This is due to a bad api (select) that uses a bitset to represent a set of file descriptors.
+    // We just bump it up as far as we're allowed.
+    size_t fileDescriptorCap = 512;
+    {
+        rlimit64 openFilesLimit = {};
+        getrlimit64(RLIMIT_NOFILE, &openFilesLimit);
+        openFilesLimit.rlim_cur = openFilesLimit.rlim_max;
+
+        // Try to leave a reasonable amount for other purposes (it will be a lot anyway, ~1mil on my machine)
+        if (setrlimit64(RLIMIT_NOFILE, &openFilesLimit) == 0 && openFilesLimit.rlim_cur > 2048)
+            fileDescriptorCap = openFilesLimit.rlim_cur - 1024;
+    }
+
     size_t oneGig = 1024 * 1024 * 1024;
     size_t ramQuota = std::max(getPhysicalRamSize() / 10, oneGig);
     size_t blockSize = 256 * 1024 * 1024; // 256M
     size_t ringSize = 100;
-    CopyQueue copyQueue(ringSize, ramQuota / blockSize, blockSize);
+    CopyQueue copyQueue(ringSize, fileDescriptorCap, Heap(ramQuota / blockSize, blockSize));
     copyQueue.start();
 
     struct stat64 srcStat = {};
@@ -57,16 +72,6 @@ int wcpMain(int argc, char** argv)
         if (destStatResult == 0)
             release_assert(S_ISDIR(destStat.st_mode));
 
-        // Linux has stupidly low default limits for concurrently open files (1024 file descriptors).
-        // This is due to a bad api (select) that uses a bitset to represent a set of file descriptors.
-        // We just bump it up as far as we're allowed.
-        {
-            rlimit64 openFilesLimit = {};
-            getrlimit64(RLIMIT_NOFILE, &openFilesLimit);
-            openFilesLimit.rlim_cur = openFilesLimit.rlim_max;
-            setrlimit64(RLIMIT_NOFILE, &openFilesLimit);
-        }
-
         copyQueue.addRecursiveCopy(src, dest);
     }
     else if (S_ISREG(srcStat.st_mode))
@@ -74,12 +79,7 @@ int wcpMain(int argc, char** argv)
         if (destStatResult == 0 && S_ISDIR(destStat.st_mode))
             dest /= src.filename();
 
-        auto sourceFd = std::make_shared<FileDescriptor>(open(src.c_str(), O_RDONLY | O_DIRECT));
-        release_assert(sourceFd->fd > 0);
-        auto destFd = std::make_shared<FileDescriptor>(open(dest.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0777));
-        release_assert(destFd->fd > 0);
-
-        copyQueue.addCopyJob(sourceFd, destFd, srcStat);
+        copyQueue.addFileCopy(src, dest, &srcStat);
     }
     else
     {

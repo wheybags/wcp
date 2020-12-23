@@ -3,10 +3,10 @@
 #include <pthread.h>
 #include <mutex>
 #include <atomic>
-#include <vector>
+#include <deque>
 #include <memory>
 #include <filesystem>
-#include "FileDescriptor.hpp"
+#include "QueueFileDescriptor.hpp"
 #include "Heap.hpp"
 
 class CopyRunner;
@@ -14,11 +14,11 @@ class CopyRunner;
 class CopyQueue
 {
 public:
-    explicit CopyQueue(size_t ringSize, size_t heapBlocks, size_t heapBlockSize);
+    explicit CopyQueue(size_t ringSize, size_t fileDescriptorCap, Heap&& heap);
     ~CopyQueue();
 
     void addRecursiveCopy(std::string from, std::string dest);
-    void addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, const struct stat64& st);
+    void addFileCopy(const std::string& from, const std::string& dest, const struct stat64* fromStatBuffer = nullptr);
     void start();
 
     enum class OnCompletionAction : uint8_t
@@ -31,11 +31,15 @@ public:
     size_t getBlockSize() const { return this->copyBufferHeap.getBlockSize(); }
     size_t getHeapAlignment() const { return this->copyBufferHeap.getAlignment(); }
 
+    static size_t minimumFileDescriptorCap() { return RESERVED_FD_COUNT + RESERVED_HIGH_PRIORITY_FD_COUNT; }
+
 private:
     friend class CopyRunner;
+    friend class QueueFileDescriptor;
 
-    void addCopyJobPart(std::shared_ptr<FileDescriptor> sourceFd,
-                        std::shared_ptr<FileDescriptor> destFd,
+    void addCopyJob(std::shared_ptr<QueueFileDescriptor> sourceFd, std::shared_ptr<QueueFileDescriptor> destFd, const struct stat64& st);
+    void addCopyJobPart(std::shared_ptr<QueueFileDescriptor> sourceFd,
+                        std::shared_ptr<QueueFileDescriptor> destFd,
                         off_t offset, off_t size, size_t alignment);
     void continueCopyJob(CopyRunner* runner);
 
@@ -51,16 +55,16 @@ private:
     static void* staticCallShowProgressLoop(void* instance) { reinterpret_cast<CopyQueue*>(instance)->showProgressLoop(); return nullptr; }
 
 private:
-
     size_t ringSize;
     size_t completionRingSize;
+    size_t fileDescriptorCap;
     std::atomic<OnCompletionAction> completionAction = OnCompletionAction::Return;
 
     Heap copyBufferHeap;
     io_uring ring = {};
 
-    std::vector<CopyRunner*> copiesPendingStart;
-    std::vector<CopyRunner*> copiesPendingContinue;
+    std::deque<CopyRunner*> copiesPendingStart;
+    std::deque<CopyRunner*> copiesPendingContinue;
     pthread_mutexattr_t mutexAttrs;
     pthread_mutex_t copiesPendingStartMutex;
 
@@ -71,6 +75,10 @@ private:
 
     std::atomic<size_t> totalBytesToCopy = 0;
     std::atomic<size_t> totalBytesCopied = 0;
+
+    static constexpr uint64_t RESERVED_FD_COUNT = 2; // Reserved one for the ring itself, and one for directory iteration
+    static constexpr uint64_t RESERVED_HIGH_PRIORITY_FD_COUNT = 2; // The real submit thread takes priority, and it needs at least 2 FDs to make progress
+    std::atomic_uint64_t fileDescriptorsUsed = RESERVED_FD_COUNT;
 
     enum class State
     {

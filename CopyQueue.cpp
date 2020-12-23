@@ -2,6 +2,7 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <dirent.h>
+#include <unistd.h>
 #include <cmath>
 #include <cstring>
 #include "CopyQueue.hpp"
@@ -10,10 +11,13 @@
 #include "Config.hpp"
 #include "Util.hpp"
 
-CopyQueue::CopyQueue(size_t ringSize, size_t heapBlocks, size_t heapBlockSize)
+CopyQueue::CopyQueue(size_t ringSize, size_t fileDescriptorCap, Heap&& heap)
     : ringSize(ringSize)
-    , copyBufferHeap(heapBlocks, heapBlockSize)
+    , fileDescriptorCap(fileDescriptorCap)
+    , copyBufferHeap(std::move(heap))
 {
+    release_assert(this->fileDescriptorCap >= CopyQueue::minimumFileDescriptorCap());
+
     io_uring_params params = {};
     release_assert(io_uring_queue_init_params(this->ringSize, &this->ring, &params) == 0);
     this->completionRingSize = params.cq_entries;
@@ -66,21 +70,21 @@ void CopyQueue::submitLoop()
 
                 if (!this->copiesPendingContinue.empty())
                 {
-                    toAdd = this->copiesPendingContinue.back();
+                    toAdd = this->copiesPendingContinue.front();
                     debug_assert(!toAdd->needsBuffer());
 
-                    this->copiesPendingContinue.pop_back();
+                    this->copiesPendingContinue.pop_front();
                 }
                 else if (nextBuffer)
                 {
-                    CopyRunner* temp = this->copiesPendingStart.back();
+                    CopyRunner* temp = this->copiesPendingStart.front();
                     debug_assert(temp->needsBuffer());
 
                     temp->giveBuffer(nextBuffer);
                     nextBuffer = nullptr;
                     toAdd = temp;
 
-                    this->copiesPendingStart.pop_back();
+                    this->copiesPendingStart.pop_front();
                 }
             }
             pthread_mutex_unlock(&this->copiesPendingStartMutex);
@@ -382,13 +386,14 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
         std::string current = std::move(directoryStack.back());
         directoryStack.pop_back();
 
-        FileDescriptor currentFd(open(current.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
-        release_assert(currentFd.fd > 0);
+        // TODO: RAII this
+        int currentFd = open(current.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        release_assert(currentFd > 0);
 
         ssize_t ret = 0;
         do
         {
-            ret = getdents64(currentFd.fd, dirBuffer.data(), dirBuffer.size());
+            ret = getdents64(currentFd, dirBuffer.data(), dirBuffer.size());
             release_assert(ret >= 0);
 
             uint8_t* nextPtr = dirBuffer.data();
@@ -442,12 +447,8 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
                         didStat = true;
                     }
 
-                    // TODO: even though we've bumped the concurrent open files limit a lot, we should still probably
-                    // try to make sure we don't exceed it.
-                    auto sourceFd = std::make_shared<FileDescriptor>(open(fullPath.c_str(), O_RDONLY | O_DIRECT | O_CLOEXEC));
-                    release_assert(sourceFd->fd > 0);
-                    auto destFd = std::make_shared<FileDescriptor>(open(destPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, sb.st_mode));
-                    release_assert(destFd->fd > 0);
+                    auto sourceFd = std::make_shared<QueueFileDescriptor>(*this, fullPath, O_RDONLY | O_DIRECT | O_CLOEXEC);
+                    auto destFd = std::make_shared<QueueFileDescriptor>(*this, destPath, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, sb.st_mode);
 
                     this->addCopyJob(sourceFd, destFd, sb);
                 }
@@ -458,11 +459,37 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
             }
 
         } while (ret != 0);
+
+        release_assert(close(currentFd) == 0);
     }
 }
 
-void CopyQueue::addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared_ptr<FileDescriptor> destFd, const struct stat64& st)
+void CopyQueue::addFileCopy(const std::string& from, const std::string& dest, const struct stat64* fromStatBuffer)
 {
+    std::unique_ptr<struct stat64> tmp;
+    if (!fromStatBuffer)
+    {
+        tmp = std::make_unique<struct stat64>();
+        release_assert(stat64(from.c_str(), tmp.get()) == 0);
+        fromStatBuffer = tmp.get();
+    }
+
+    auto sourceFd = std::make_shared<QueueFileDescriptor>(*this, from, O_RDONLY | O_DIRECT | O_CLOEXEC);
+    auto destFd = std::make_shared<QueueFileDescriptor>(*this, dest, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, fromStatBuffer->st_mode);
+
+    this->addCopyJob(sourceFd, destFd, *fromStatBuffer);
+}
+
+void CopyQueue::addCopyJob(std::shared_ptr<QueueFileDescriptor> sourceFd, std::shared_ptr<QueueFileDescriptor> destFd, const struct stat64& st)
+{
+    if (st.st_size == 0)
+    {
+        // This makes sure the file gets created. Otherwise, it could be deferred to the CopyRunner, but the deferred close would
+        // never happen since there's no bytes to copy, so no CopyRunner gets created.
+        destFd->ensureOpened();
+        return;
+    }
+
     // Source file is opened with O_DIRECT flag. This means the buffer we read to has to be aligned.
     // O_DIRECT actually no longer requires us to align to the block size of the filesystem (which is what we're fetching here),
     // but now allows us to use the block size of the device backing the filesystem. Typical values would be 4096 for the
@@ -486,7 +513,6 @@ void CopyQueue::addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared
 
     release_assert(chunkSize > 0);
 
-    // Zero size files are already handled, because the file has been opened for writing before calling this function
     off_t offset = 0;
     while (offset != st.st_size)
     {
@@ -496,8 +522,8 @@ void CopyQueue::addCopyJob(std::shared_ptr<FileDescriptor> sourceFd, std::shared
     }
 }
 
-void CopyQueue::addCopyJobPart(std::shared_ptr<FileDescriptor> sourceFd,
-                               std::shared_ptr<FileDescriptor> destFd,
+void CopyQueue::addCopyJobPart(std::shared_ptr<QueueFileDescriptor> sourceFd,
+                               std::shared_ptr<QueueFileDescriptor> destFd,
                                off_t offset, off_t size, size_t alignment)
 {
     debug_assert(this->state == State::Running);

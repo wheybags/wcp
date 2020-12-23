@@ -7,8 +7,8 @@
 #include <cstring>
 
 CopyRunner::CopyRunner(CopyQueue* queue,
-                       std::shared_ptr<FileDescriptor> sourceFd,
-                       std::shared_ptr<FileDescriptor> destFd,
+                       std::shared_ptr<QueueFileDescriptor> sourceFd,
+                       std::shared_ptr<QueueFileDescriptor> destFd,
                        off_t offset,
                        off_t size,
                        size_t alignment)
@@ -47,8 +47,11 @@ void CopyRunner::addToBatch()
 {
     debug_assert(!this->needsBuffer());
 
+    this->sourceFd->ensureOpened();
+    this->destFd->ensureOpened();
+
     if (Config::DEBUG_COPY_OPS)
-        printf("START %d->%d\n", this->sourceFd->fd, this->destFd->fd);
+        printf("START %d->%d\n", this->sourceFd->getFd(), this->destFd->getFd());
 
     debug_assert(this->jobsRunning == 0);
     debug_assert(this->writeOffset <= this->offset + this->size);
@@ -91,7 +94,7 @@ void CopyRunner::addToBatch()
             bytesToRead = blocks * this->alignment;
         }
 
-        io_uring_prep_read(sqe, this->sourceFd->fd, this->bufferAligned + this->readOffset - this->offset, bytesToRead, this->readOffset);
+        io_uring_prep_read(sqe, this->sourceFd->getFd(), this->bufferAligned + this->readOffset - this->offset, bytesToRead, this->readOffset);
         sqe->flags |= IOSQE_IO_LINK;
 
         static_assert(sizeof(sqe->user_data) == sizeof(void*));
@@ -115,7 +118,7 @@ void CopyRunner::addToBatch()
                 bytesToWrite = rand() % (bytesToWrite + 1);
 
             io_uring_prep_write(sqe,
-                                this->destFd->fd,
+                                this->destFd->getFd(),
                                 this->bufferAligned + this->writeOffset - this->offset,
                                 bytesToWrite,
                                 this->writeOffset);
@@ -164,7 +167,7 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
         if (Config::DEBUG_COPY_OPS)
         {
             printf("RD %d->%d JR:%d RES: %d %s\n",
-                   this->sourceFd->fd, this->destFd->fd, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
+                   this->sourceFd->getFd(), this->destFd->getFd(), this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
         }
         release_assert(result > 0);
         this->readOffset += result;
@@ -180,7 +183,7 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
         if (Config::DEBUG_COPY_OPS)
         {
             printf("WT %d->%d JR:%d RES: %d %s\n",
-                   this->sourceFd->fd, this->destFd->fd, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
+                   this->sourceFd->getFd(), this->destFd->getFd(), this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
         }
 
         release_assert(result >= 0 || result == -ECANCELED);

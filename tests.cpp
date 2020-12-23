@@ -6,6 +6,7 @@
 #include "Config.hpp"
 #include "Util.hpp"
 #include "wcpMain.hpp"
+#include "Assert.hpp"
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wclobbered"
@@ -30,7 +31,8 @@ std::unique_ptr<CopyQueue> getTestQueue()
     size_t ramQuota = oneGig;
     size_t blockSize = 256 * 1024 * 1024; // 256M
     size_t ringSize = 100;
-    auto queue = std::make_unique<CopyQueue>(ringSize, ramQuota / blockSize, blockSize);
+    size_t fileDescriptorCap = 512;
+    auto queue = std::make_unique<CopyQueue>(ringSize, fileDescriptorCap, Heap(ramQuota / blockSize, blockSize));
     queue->start();
 
     return queue;
@@ -212,20 +214,8 @@ void test_CopySmallFileNotAlignedSize()
 
         clearTargetFile(destPath);
 
-        {
-            auto sourceFd = std::make_shared<FileDescriptor>(open(srcFile.c_str(), O_RDONLY | O_DIRECT));
-            TEST_ASSERT(sourceFd->fd > 0);
-
-            struct stat64 st = {};
-            fstat64(sourceFd->fd, &st);
-
-            auto destFd = std::make_shared<FileDescriptor>(open(destPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, st.st_mode));
-            TEST_ASSERT(destFd->fd > 0);
-
-            queue->addCopyJob(sourceFd, destFd, st);
-
-            queue->join();
-        }
+        queue->addFileCopy(srcFile, destPath);
+        queue->join();
 
         assertFilesEqual(srcFile, destPath);
     });

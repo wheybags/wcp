@@ -10,6 +10,7 @@ class Heap
 {
 public:
     explicit Heap(size_t blocks, size_t blockSize, size_t alignment = 4096);
+    Heap(Heap&& other);
     ~Heap();
 
     Heap(const Heap&) = delete;

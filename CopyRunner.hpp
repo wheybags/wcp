@@ -24,8 +24,8 @@ public:
     };
 
     CopyRunner(CopyQueue* queue,
-               std::shared_ptr<FileDescriptor> sourceFd,
-               std::shared_ptr<FileDescriptor> destFd,
+               std::shared_ptr<QueueFileDescriptor> sourceFd,
+               std::shared_ptr<QueueFileDescriptor> destFd,
                off_t offset,
                off_t size,
                size_t alignment);
@@ -46,8 +46,8 @@ public:
 
 private:
     CopyQueue* queue;
-    std::shared_ptr<FileDescriptor> sourceFd;
-    std::shared_ptr<FileDescriptor> destFd;
+    std::shared_ptr<QueueFileDescriptor> sourceFd;
+    std::shared_ptr<QueueFileDescriptor> destFd;
     off_t offset;
     off_t size;
     size_t alignment;

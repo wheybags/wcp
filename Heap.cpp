@@ -13,6 +13,21 @@ Heap::Heap(size_t blocks, size_t blockSize, size_t alignment)
     debug_assert(this->getFreeBlocksCount() == this->blocks);
 }
 
+Heap::Heap(Heap&& other)
+{
+    this->usedList = other.usedList;
+    this->data = other.data;
+    this->blocks = other.blocks;
+    this->blockSize = other.blockSize;
+    this->alignment = other.alignment;
+
+    other.usedList = nullptr;
+    other.data = nullptr;
+    other.blocks = 0;
+    other.blockSize = 0;
+    other.alignment = 0;
+}
+
 Heap::~Heap()
 {
 #ifndef NDEBUG
