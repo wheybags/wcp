@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <spawn.h>
 #include "CopyQueue.hpp"
+#include "CopyRunner.hpp"
 #include "Config.hpp"
 #include "Util.hpp"
 #include "wcpMain.hpp"
@@ -204,103 +205,152 @@ void clearTargetFile(const std::string& path)
     TEST_ASSERT(errno == 0 || errno == ENOENT);
 }
 
-void test_CopySmallFileNotAlignedSize()
+class TestContainer
 {
-    runWithAllPartialModes([]()
+public:
+    static void CopySmallFileNotAlignedSize()
+    {
+        runWithAllPartialModes([]() {
+            std::unique_ptr<CopyQueue> queue = getTestQueue();
+            std::string srcFile = getTestDataFolder(10, 1) + "/10/1";
+            std::string destPath = "/tmp/test_CopySmallFileNotAlignedSize";
+
+            clearTargetFile(destPath);
+
+            queue->addFileCopy(srcFile, destPath);
+            queue->join();
+
+            assertFilesEqual(srcFile, destPath);
+        });
+    }
+
+    static void CopyLargeFolder()
+    {
+        runWithAllPartialModes([]() {
+            std::unique_ptr<CopyQueue> queue = getTestQueue();
+            std::string srcFolder = getTestDataFolder(1024 * 1024 * 512, 5);
+            std::string destPath = getProjectBasePath() + "/test_dest";
+
+            std::filesystem::remove_all(destPath);
+
+            queue->addRecursiveCopy(srcFolder, destPath);
+            queue->join();
+
+            assertFoldersEqual(srcFolder, destPath);
+        });
+    }
+
+    static void ResolveCopyDestination()
+    {
+        Config::DEBUG_FORCE_PARTIAL_READS = false;
+        Config::DEBUG_FORCE_PARTIAL_WRITES = false;
+        Config::NO_CLEANUP = false;
+
+        std::string base = getProjectBasePath() + "/test_data/TestResolveCopyDestination";
+        std::string source = base + "/source";
+        std::string dest = base + "/dest";
+        std::string contentFile = source + "/content_file";
+
+        // set up a clean copy of our source folder, containing a single file "content_file"
+        {
+            std::filesystem::remove_all(base);
+            recursiveMkdir(base);
+
+            TEST_ASSERT(mkdir(source.c_str(), S_IRWXU) == 0);
+
+            FILE *f = fopen(contentFile.c_str(), "wb");
+            TEST_ASSERT(f != nullptr);
+            TEST_ASSERT(fclose(f) == 0);
+        }
+
+        auto call = [](const std::string &a, const std::string &b) {
+            int argc = 3;
+            const char *argv[] = {"wcp", a.c_str(), b.c_str(), nullptr};
+            wcpMain(argc, (char **) argv);
+        };
+
+        call(source, dest);
+        TEST_ASSERT(access((dest + "/source/content_file").c_str(), F_OK) == 0);
+
+        std::filesystem::remove_all(dest);
+        call(source + "/", dest);
+        TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
+
+        std::filesystem::remove_all(dest);
+        call(source, dest + "/");
+        TEST_ASSERT(access((dest + "/source/content_file").c_str(), F_OK) == 0);
+
+        std::filesystem::remove_all(dest);
+        call(source + "/", dest + "/");
+        TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
+
+        std::filesystem::remove_all(dest);
+        call(source + "/.", dest);
+        TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
+
+        std::filesystem::remove_all(dest);
+        call(contentFile, dest);
+        TEST_ASSERT(access(dest.c_str(), F_OK) == 0);
+
+        std::filesystem::remove_all(dest);
+        TEST_ASSERT(mkdir(dest.c_str(), S_IRWXU) == 0);
+        call(contentFile, dest);
+        TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
+    }
+
+    static void TruncatedDuringCopy()
     {
         std::unique_ptr<CopyQueue> queue = getTestQueue();
-        std::string srcFile = getTestDataFolder(10, 1) + "/10/1";
-        std::string destPath = "/tmp/test_CopySmallFileNotAlignedSize";
-
-        clearTargetFile(destPath);
-
-        queue->addFileCopy(srcFile, destPath);
-        queue->join();
-
-        assertFilesEqual(srcFile, destPath);
-    });
-}
-
-void test_CopyLargeFolder()
-{
-    runWithAllPartialModes([]()
-    {
-        std::unique_ptr<CopyQueue> queue = getTestQueue();
-        std::string srcFolder = getTestDataFolder(1024 * 1024 * 512, 5);
+        std::string srcFile = getProjectBasePath() + "/test_data/TruncateTest";
         std::string destPath = getProjectBasePath() + "/test_dest";
 
         std::filesystem::remove_all(destPath);
 
-        queue->addRecursiveCopy(srcFolder, destPath);
+        size_t initialSize = 1024*1024*512;
+        size_t truncatedSize = 1024*1024*300;
+
+        int srcWriteFd = open(srcFile.c_str(), O_WRONLY | O_TRUNC | O_CREAT, S_IRWXU);
+        release_assert(srcWriteFd > 0);
+        release_assert(ftruncate(srcWriteFd, initialSize) == 0);
+        fsync(srcWriteFd);
+
+
+        int32_t didTruncateAtInvocation = -1;
+        int32_t invocations = 0;
+
+        CopyRunner::testingCallbackOnCompletionEventStart = [&](CopyRunner&, CopyRunner::EventData::Type type, __s32 result)
+        {
+            if (didTruncateAtInvocation == -1 && type == CopyRunner::EventData::Type::Read && result > 0)
+            {
+                didTruncateAtInvocation = invocations;
+
+                int a = ftruncate64(srcWriteFd, truncatedSize);
+                release_assert( a== 0);
+            }
+
+            invocations++;
+        };
+
+        queue->addFileCopy(srcFile, destPath);
         queue->join();
 
-        assertFoldersEqual(srcFolder, destPath);
-    });
-}
+        struct stat64 sb = {};
+        release_assert(stat64(destPath.c_str(), &sb) == 0);
+        release_assert(size_t(sb.st_size) == truncatedSize);
 
-void test_ResolveCopyDestination()
-{
-    Config::DEBUG_FORCE_PARTIAL_READS = false;
-    Config::DEBUG_FORCE_PARTIAL_WRITES = false;
-    Config::NO_CLEANUP = false;
+        CopyRunner::testingCallbackOnCompletionEventStart = nullptr;
+        release_assert(close(srcWriteFd) == 0);
 
-    std::string base = getProjectBasePath() + "/test_data/TestResolveCopyDestination";
-    std::string source = base + "/source";
-    std::string dest = base + "/dest";
-    std::string contentFile = source + "/content_file";
-
-    // set up a clean copy of our source folder, containing a single file "content_file"
-    {
-        std::filesystem::remove_all(base);
-        recursiveMkdir(base);
-
-        TEST_ASSERT(mkdir(source.c_str(), S_IRWXU) == 0);
-
-        FILE* f = fopen(contentFile.c_str(), "wb");
-        TEST_ASSERT(f != nullptr);
-        TEST_ASSERT(fclose(f) == 0);
+        release_assert(didTruncateAtInvocation == 0);
+        release_assert(invocations > didTruncateAtInvocation);
     }
-
-    auto call = [](const std::string& a, const std::string& b)
-    {
-        int argc = 3;
-        const char *argv[] = {"wcp", a.c_str(), b.c_str(), nullptr};
-        wcpMain(argc, (char**)argv);
-    };
-
-    call(source, dest);
-    TEST_ASSERT(access((dest + "/source/content_file").c_str(), F_OK) == 0);
-
-    std::filesystem::remove_all(dest);
-    call(source + "/", dest);
-    TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
-
-    std::filesystem::remove_all(dest);
-    call(source, dest + "/");
-    TEST_ASSERT(access((dest + "/source/content_file").c_str(), F_OK) == 0);
-
-    std::filesystem::remove_all(dest);
-    call(source + "/", dest + "/");
-    TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
-
-    std::filesystem::remove_all(dest);
-    call(source + "/.", dest);
-    TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
-
-    std::filesystem::remove_all(dest);
-    call(contentFile, dest);
-    TEST_ASSERT(access(dest.c_str(), F_OK) == 0);
-
-    std::filesystem::remove_all(dest);
-    TEST_ASSERT(mkdir(dest.c_str(), S_IRWXU) == 0);
-    call(contentFile, dest);
-    TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
-}
+};
 
 TEST_LIST =
 {
-    {"CopySmallFileNotAlignedSize", test_CopySmallFileNotAlignedSize},
-    {"ResolveCopyDestination", test_ResolveCopyDestination},
-    {"CopyLargeFolder", test_CopyLargeFolder},
+    {"CopySmallFileNotAlignedSize", TestContainer::CopySmallFileNotAlignedSize},
+    {"ResolveCopyDestination", TestContainer::ResolveCopyDestination},
+    {"TruncatedDuringCopy", TestContainer::TruncatedDuringCopy},
+    {"CopyLargeFolder", TestContainer::CopyLargeFolder},
     {nullptr, nullptr }
 };

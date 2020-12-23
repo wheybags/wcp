@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <sys/types.h>
 #include <asm/types.h>
+#include <functional>
 #include "CopyQueue.hpp"
 
 
@@ -45,6 +46,9 @@ public:
     static constexpr int32_t MAX_JOBS_PER_RUNNER = 2;
 
 private:
+    friend class TestContainer;
+    static std::function<void(CopyRunner& runner, EventData::Type type, __s32 result)> testingCallbackOnCompletionEventStart;
+
     CopyQueue* queue;
     std::shared_ptr<QueueFileDescriptor> sourceFd;
     std::shared_ptr<QueueFileDescriptor> destFd;

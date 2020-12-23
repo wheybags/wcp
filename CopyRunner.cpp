@@ -6,6 +6,8 @@
 #include <cerrno>
 #include <cstring>
 
+std::function<void(CopyRunner& runner, CopyRunner::EventData::Type type, __s32 result)> CopyRunner::testingCallbackOnCompletionEventStart;
+
 CopyRunner::CopyRunner(CopyQueue* queue,
                        std::shared_ptr<QueueFileDescriptor> sourceFd,
                        std::shared_ptr<QueueFileDescriptor> destFd,
@@ -70,8 +72,8 @@ void CopyRunner::addToBatch()
 
     unsigned int bytesToRead = this->offset + this->size - this->readOffset;
 
-    if (Config::DEBUG_FORCE_PARTIAL_READS)
-        bytesToRead = rand() % (bytesToRead + 1);
+    if (Config::DEBUG_FORCE_PARTIAL_READS && bytesToRead > 0)
+        bytesToRead = (rand() % bytesToRead) + 1; // ensure we never force a read of zero, as that would indicate EOF
 
     bool readForcedPartial = bytesToRead < this->offset + this->size - this->readOffset;
     unsigned int unalignedReadSize = bytesToRead;
@@ -159,6 +161,9 @@ void CopyRunner::addToBatch()
 
 bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
 {
+    if (CopyRunner::testingCallbackOnCompletionEventStart)
+        CopyRunner::testingCallbackOnCompletionEventStart(*this, type, result);
+
     this->jobsRunning--;
     debug_assert(jobsRunning >= 0);
 
@@ -169,13 +174,22 @@ bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
             printf("RD %d->%d JR:%d RES: %d %s\n",
                    this->sourceFd->getFd(), this->destFd->getFd(), this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
         }
-        release_assert(result > 0);
+
+        release_assert(result >= 0);
+
+        // result of zero indicates EOF. This will happen if the file is truncated by another process.
+        // If this happens, then we just bail out. We write what we have already read, and leave it at that.
+        // Someone else is modifying the file as we read it, so there's not much else we can do.
+        if (result == 0)
+            this->size = this->readOffset - this->offset;
+
         this->readOffset += result;
 
         // If we're not at the end of the file, and we read up to a non-aligned offset, then back up until
         // we're aligned again. This probably won't happen in the real world, but the DEBUG_FORCE_PARTIAL_READS mode
         // does make it happen, so we handle it. Also it's not guaranteed to never happen for real.
-        if (this->offset + this->size - this->readOffset)
+        unsigned int bytesToRead = this->offset + this->size - this->readOffset;
+        if (bytesToRead)
             this->readOffset = (this->readOffset / this->alignment) * this->alignment;
     }
     else
