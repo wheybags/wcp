@@ -6,8 +6,6 @@
 #include <cerrno>
 #include <cstring>
 
-std::function<void(CopyRunner& runner, CopyRunner::EventData::Type type, __s32 result)> CopyRunner::testingCallbackOnCompletionEventStart;
-
 CopyRunner::CopyRunner(CopyQueue* queue,
                        std::shared_ptr<QueueFileDescriptor> sourceFd,
                        std::shared_ptr<QueueFileDescriptor> destFd,
@@ -22,7 +20,9 @@ CopyRunner::CopyRunner(CopyQueue* queue,
         , alignment(alignment)
         , readOffset(offset)
         , writeOffset(offset)
-{}
+{
+    this->queue->keepAliveCount++;
+}
 
 CopyRunner::~CopyRunner()
 {
@@ -30,6 +30,8 @@ CopyRunner::~CopyRunner()
 
     if (this->buffer)
         this->queue->copyBufferHeap.returnBlock(this->buffer);
+
+    this->queue->keepAliveCount--;
 }
 
 void CopyRunner::giveBuffer(uint8_t* _buffer)
@@ -45,17 +47,32 @@ void CopyRunner::giveBuffer(uint8_t* _buffer)
     release_assert(this->bufferAligned + this->size <= this->buffer + this->queue->copyBufferHeap.getBlockSize());
 }
 
-void CopyRunner::addToBatch()
+Result CopyRunner::addToBatch()
 {
     debug_assert(!this->needsBuffer());
 
-    this->sourceFd->ensureOpened();
-    this->destFd->ensureOpened();
+    {
+        Result result;
+
+        for (auto& fd : {this->sourceFd, this->destFd})
+        {
+            result = fd->ensureOpened();
+            if (std::holds_alternative<Error>(result))
+                break;
+        }
+
+        if (std::holds_alternative<Error>(result))
+        {
+            // TODO: account for other fragments of this copy
+            this->queue->totalBytesFailed += this->size;
+            return result;
+        }
+    }
 
     if (Config::DEBUG_COPY_OPS)
-        printf("START %d->%d\n", this->sourceFd->getFd(), this->destFd->getFd());
+        printf("START %d->%d %ld\n", this->sourceFd->getFd(), this->destFd->getFd(), this->offset);
 
-    debug_assert(this->jobsRunning == 0);
+    release_assert(this->jobsRunning == 0);
     debug_assert(this->writeOffset <= this->offset + this->size);
 
     auto getSqe = [&]()
@@ -97,7 +114,7 @@ void CopyRunner::addToBatch()
         }
 
         io_uring_prep_read(sqe, this->sourceFd->getFd(), this->bufferAligned + this->readOffset - this->offset, bytesToRead, this->readOffset);
-        sqe->flags |= IOSQE_IO_LINK;
+        sqe->flags |= IOSQE_IO_LINK; // The following write command will fail with ECANCELLED if this read doesn't fully complete
 
         static_assert(sizeof(sqe->user_data) == sizeof(void*));
         sqe->user_data = reinterpret_cast<__u64>(&this->readData);
@@ -157,59 +174,100 @@ void CopyRunner::addToBatch()
     }
     while (ret == -EAGAIN || ret == -EINTR);
     release_assert(ret > 0);
+
+    return Success();
 }
 
-bool CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
+CopyRunner::RunnerResult CopyRunner::onCompletionEvent(EventData::Type type, __s32 result)
 {
-    if (CopyRunner::testingCallbackOnCompletionEventStart)
-        CopyRunner::testingCallbackOnCompletionEventStart(*this, type, result);
-
     this->jobsRunning--;
     debug_assert(jobsRunning >= 0);
+
+    if (this->jobsRunning == 0 && this->deferredError)
+        return std::move(*this->deferredError);
+
+    std::optional<Error> error;
 
     if (type == EventData::Type::Read)
     {
         if (Config::DEBUG_COPY_OPS)
         {
-            printf("RD %d->%d JR:%d RES: %d %s\n",
-                   this->sourceFd->getFd(), this->destFd->getFd(), this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
+            printf("RD %d->%d %ld JR:%d RES: %d %s\n",
+                   this->sourceFd->getFd(), this->destFd->getFd(), this->offset, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
         }
 
-        release_assert(result >= 0);
-
         // result of zero indicates EOF. This will happen if the file is truncated by another process.
-        // If this happens, then we just bail out. We write what we have already read, and leave it at that.
-        // Someone else is modifying the file as we read it, so there's not much else we can do.
+        // If this happens, then we just bail out. Someone else is modifying the file as we read it, so there's not much else we can do.
         if (result == 0)
-            this->size = this->readOffset - this->offset;
+        {
+            if (this->queue->showingErrors)
+                error = Error("File shrank while copying: \"" + this->sourceFd->getPath() + "\"");
+            else
+                error = Error();
+        }
+        if (result < 0)
+        {
+            if (this->queue->showingErrors)
+                error = Error("Error reading file \"" + this->sourceFd->getPath() + "\": \"" + strerror(-result) + "\"");
+            else
+                error = Error();
+        }
+        else
+        {
+            this->readOffset += result;
 
-        this->readOffset += result;
-
-        // If we're not at the end of the file, and we read up to a non-aligned offset, then back up until
-        // we're aligned again. This probably won't happen in the real world, but the DEBUG_FORCE_PARTIAL_READS mode
-        // does make it happen, so we handle it. Also it's not guaranteed to never happen for real.
-        unsigned int bytesToRead = this->offset + this->size - this->readOffset;
-        if (bytesToRead)
-            this->readOffset = (this->readOffset / this->alignment) * this->alignment;
+            // If we're not at the end of the file, and we read up to a non-aligned offset, then back up until
+            // we're aligned again. This probably won't happen in the real world, but the DEBUG_FORCE_PARTIAL_READS mode
+            // does make it happen, so we handle it. Also it's not guaranteed to never happen for real.
+            unsigned int bytesToRead = this->offset + this->size - this->readOffset;
+            if (bytesToRead)
+                this->readOffset = (this->readOffset / this->alignment) * this->alignment;
+        }
     }
     else
     {
         if (Config::DEBUG_COPY_OPS)
         {
-            printf("WT %d->%d JR:%d RES: %d %s\n",
-                   this->sourceFd->getFd(), this->destFd->getFd(), this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
+            printf("WT %d->%d %ld JR:%d RES: %d %s\n",
+                   this->sourceFd->getFd(), this->destFd->getFd(), this->size, this->jobsRunning, result, (result < 0 ? strerror(-result) : ""));
         }
 
-        release_assert(result >= 0 || result == -ECANCELED);
-        if (result > 0)
+        if (result < 0)
+        {
+            // ECANCELED means the preceding read failed or didn't fully complete.
+            // This is set up with the IOSQE_IO_LINK flag on the read submission.
+            if (result != -ECANCELED)
+            {
+                if (this->queue->showingErrors)
+                    error = Error("Error writing file \"" + this->destFd->getPath() + "\": \"" + strerror(-result) + "\"");
+                else
+                    error = Error();
+            }
+        }
+        else
         {
             this->writeOffset += result;
             this->queue->totalBytesCopied += result;
         }
     }
 
-    if (this->jobsRunning == 0 && this->writeOffset < this->offset + this->size)
-        this->queue->continueCopyJob(this);
+    debug_assert(this->writeOffset <= this->offset + this->size);
 
-    return this->jobsRunning == 0 && this->writeOffset == this->offset + this->size;
+    if (error)
+    {
+        if (this->jobsRunning > 0)
+            this->deferredError = std::move(*error);
+        else
+            return std::move(*error);
+    }
+
+    if (this->jobsRunning == 0)
+    {
+        if (this->writeOffset == this->offset + this->size)
+            return FinishedTag();
+        else
+            return RescheduleTag();
+    }
+
+    return ContinueTag();
 }

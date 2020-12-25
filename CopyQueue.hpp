@@ -45,6 +45,7 @@ private:
 
     bool isDone();
     void exitProcess();
+    void onError(Error&& error);
 
     void submitLoop();
     void completionLoop();
@@ -65,8 +66,7 @@ private:
 
     std::deque<CopyRunner*> copiesPendingStart;
     std::deque<CopyRunner*> copiesPendingContinue;
-    pthread_mutexattr_t mutexAttrs;
-    pthread_mutex_t copiesPendingStartMutex;
+    pthread_mutex_t copiesPendingStartMutex = PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP;
 
     std::atomic_uint32_t copiesPendingStartCount = 0;
     std::atomic_uint32_t keepAliveCount = 0;
@@ -75,6 +75,10 @@ private:
 
     std::atomic<size_t> totalBytesToCopy = 0;
     std::atomic<size_t> totalBytesCopied = 0;
+    std::atomic<size_t> totalBytesFailed = 0;
+
+    std::vector<std::string> errorMessages;
+    pthread_mutex_t errorMessagesMutex = PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP;
 
     static constexpr uint64_t RESERVED_FD_COUNT = 2; // Reserved one for the ring itself, and one for directory iteration
     static constexpr uint64_t RESERVED_HIGH_PRIORITY_FD_COUNT = 2; // The real submit thread takes priority, and it needs at least 2 FDs to make progress
@@ -92,8 +96,10 @@ private:
     pthread_t submitThread;
 
     pthread_t showProgressThread;
-    bool showingProgress = false;
     pthread_mutex_t progressEndMutex = PTHREAD_MUTEX_INITIALIZER;
+
+    bool showingProgress = false;
+    bool showingErrors = true;
 };
 
 

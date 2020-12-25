@@ -39,15 +39,20 @@ public:
     bool needsBuffer() const { return this->buffer == nullptr; }
     void giveBuffer(uint8_t* buffer);
 
-    void addToBatch();
-    bool onCompletionEvent(EventData::Type type, __s32 result);
+    [[nodiscard]] Result addToBatch();
+
+    class ContinueTag {};
+    class RescheduleTag {};
+    class FinishedTag {};
+    using RunnerResult = std::variant<Error, RescheduleTag, FinishedTag, ContinueTag>;
+    RunnerResult onCompletionEvent(EventData::Type type, __s32 result);
 
 public:
     static constexpr int32_t MAX_JOBS_PER_RUNNER = 2;
 
 private:
     friend class TestContainer;
-    static std::function<void(CopyRunner& runner, EventData::Type type, __s32 result)> testingCallbackOnCompletionEventStart;
+    std::optional<Error> deferredError;
 
     CopyQueue* queue;
     std::shared_ptr<QueueFileDescriptor> sourceFd;

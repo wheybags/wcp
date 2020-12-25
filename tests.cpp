@@ -34,7 +34,6 @@ std::unique_ptr<CopyQueue> getTestQueue()
     size_t ringSize = 100;
     size_t fileDescriptorCap = 512;
     auto queue = std::make_unique<CopyQueue>(ringSize, fileDescriptorCap, Heap(ramQuota / blockSize, blockSize));
-    queue->start();
 
     return queue;
 }
@@ -212,6 +211,7 @@ public:
     {
         runWithAllPartialModes([]() {
             std::unique_ptr<CopyQueue> queue = getTestQueue();
+            queue->start();
             std::string srcFile = getTestDataFolder(10, 1) + "/10/1";
             std::string destPath = "/tmp/test_CopySmallFileNotAlignedSize";
 
@@ -228,6 +228,7 @@ public:
     {
         runWithAllPartialModes([]() {
             std::unique_ptr<CopyQueue> queue = getTestQueue();
+            queue->start();
             std::string srcFolder = getTestDataFolder(1024 * 1024 * 512, 5);
             std::string destPath = getProjectBasePath() + "/test_dest";
 
@@ -312,37 +313,20 @@ public:
         int srcWriteFd = open(srcFile.c_str(), O_WRONLY | O_TRUNC | O_CREAT, S_IRWXU);
         release_assert(srcWriteFd > 0);
         release_assert(ftruncate(srcWriteFd, initialSize) == 0);
-        fsync(srcWriteFd);
-
-
-        int32_t didTruncateAtInvocation = -1;
-        int32_t invocations = 0;
-
-        CopyRunner::testingCallbackOnCompletionEventStart = [&](CopyRunner&, CopyRunner::EventData::Type type, __s32 result)
-        {
-            if (didTruncateAtInvocation == -1 && type == CopyRunner::EventData::Type::Read && result > 0)
-            {
-                didTruncateAtInvocation = invocations;
-
-                int a = ftruncate64(srcWriteFd, truncatedSize);
-                release_assert( a== 0);
-            }
-
-            invocations++;
-        };
+        release_assert(fsync(srcWriteFd) == 0);
 
         queue->addFileCopy(srcFile, destPath);
+
+        release_assert(ftruncate64(srcWriteFd, truncatedSize) == 0);
+        release_assert(fsync(srcWriteFd) == 0);
+        release_assert(close(srcWriteFd) == 0);
+
+        queue->start();
         queue->join();
 
         struct stat64 sb = {};
         release_assert(stat64(destPath.c_str(), &sb) == 0);
-        release_assert(size_t(sb.st_size) == truncatedSize);
-
-        CopyRunner::testingCallbackOnCompletionEventStart = nullptr;
-        release_assert(close(srcWriteFd) == 0);
-
-        release_assert(didTruncateAtInvocation == 0);
-        release_assert(invocations > didTruncateAtInvocation);
+        release_assert(size_t(sb.st_size) <= truncatedSize);
     }
 };
 

@@ -10,6 +10,7 @@
 #include "CopyRunner.hpp"
 #include "Config.hpp"
 #include "Util.hpp"
+#include "ScopedFileDescriptor.hpp"
 
 CopyQueue::CopyQueue(size_t ringSize, size_t fileDescriptorCap, Heap&& heap)
     : ringSize(ringSize)
@@ -21,17 +22,12 @@ CopyQueue::CopyQueue(size_t ringSize, size_t fileDescriptorCap, Heap&& heap)
     io_uring_params params = {};
     release_assert(io_uring_queue_init_params(this->ringSize, &this->ring, &params) == 0);
     this->completionRingSize = params.cq_entries;
-
-    release_assert(pthread_mutexattr_init(&this->mutexAttrs) == 0);
-    release_assert(pthread_mutexattr_settype(&this->mutexAttrs, PTHREAD_MUTEX_ADAPTIVE_NP) == 0);
-    release_assert(pthread_mutex_init(&this->copiesPendingStartMutex, &this->mutexAttrs) == 0);
 }
 
 CopyQueue::~CopyQueue()
 {
     io_uring_queue_exit(&this->ring);
     debug_assert(pthread_mutex_destroy(&this->copiesPendingStartMutex) == 0);
-    debug_assert(pthread_mutexattr_destroy(&this->mutexAttrs) == 0);
 }
 
 bool CopyQueue::isDone()
@@ -45,6 +41,25 @@ void CopyQueue::exitProcess()
     // No need to carefully clean up all our threads and memory allocations, the kernel will clean up for us.
     // Using _exit disables any registered atexit handlers from running.
     _exit(0); // TODO: some sensible error code
+}
+
+void CopyQueue::onError(Error&& error)
+{
+    if (this->showingErrors)
+    {
+        if (this->showingProgress)
+        {
+            pthread_mutex_lock(&this->errorMessagesMutex);
+
+            this->errorMessages.emplace_back(std::move(*error.humanFriendlyErrorMessage));
+
+            pthread_mutex_unlock(&this->errorMessagesMutex);
+        }
+        else
+        {
+            fputs(error.humanFriendlyErrorMessage->c_str(), stderr);
+        }
+    }
 }
 
 void CopyQueue::submitLoop()
@@ -91,8 +106,14 @@ void CopyQueue::submitLoop()
 
             if (toAdd)
             {
-                toAdd->addToBatch();
+                Result result = toAdd->addToBatch();
                 this->copiesPendingStartCount--;
+
+                if (std::holds_alternative<Error>(result))
+                {
+                    delete toAdd;
+                    this->onError(std::move(std::get<Error>(result)));
+                }
             }
         }
 
@@ -141,10 +162,19 @@ void CopyQueue::completionLoop()
                 eventData->resultOverride = std::numeric_limits<__s32>::max();
             }
 
-            if (eventData->copyData->onCompletionEvent(eventData->type, result))
+            CopyRunner::RunnerResult runnerResult = eventData->copyData->onCompletionEvent(eventData->type, result);
+            if (std::holds_alternative<CopyRunner::FinishedTag>(runnerResult))
             {
                 delete eventData->copyData;
-                this->keepAliveCount--;
+            }
+            else if (std::holds_alternative<Error>(runnerResult))
+            {
+                this->onError(std::move(std::get<Error>(runnerResult)));
+                delete eventData->copyData;
+            }
+            else if(std::holds_alternative<CopyRunner::RescheduleTag>(runnerResult))
+            {
+                this->continueCopyJob(eventData->copyData);
             }
 
             io_uring_cqe_seen(&ring, cqe);
@@ -238,6 +268,17 @@ void CopyQueue::showProgressLoop()
             fputs((rightPad(line, winsize.ws_col) + "\n").c_str(), stderr);
         };
 
+        std::vector<std::string> localErrorMessages;
+        {
+            pthread_mutex_lock(&this->errorMessagesMutex);
+            if (!this->errorMessages.empty())
+               this->errorMessages.swap(localErrorMessages);
+            pthread_mutex_unlock(&this->errorMessagesMutex);
+        }
+
+        for (const auto& message: localErrorMessages)
+            showLine(message);
+
         bool haveTotal = int(this->state.load()) >= int(State::AdditionComplete);
 
         // show raw amount copied
@@ -278,6 +319,8 @@ void CopyQueue::showProgressLoop()
 
         firstShow = false;
     };
+
+    fputs("\n", stderr);
 
     const float updateIntervalSeconds = 0.25f;
 
@@ -342,10 +385,10 @@ void CopyQueue::join(OnCompletionAction onCompletionAction)
     if (this->completionAction == OnCompletionAction::ExitProcessNoCleanup)
         this->exitProcess();
 
+    pthread_join(this->submitThread, nullptr);
+
     debug_assert(this->submissionsRunning == 0);
     debug_assert(this->copyBufferHeap.getFreeBlocksCount() == this->copyBufferHeap.getBlockCount());
-
-    pthread_join(this->submitThread, nullptr);
 
     if (this->showingProgress)
     {
@@ -386,14 +429,17 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
         std::string current = std::move(directoryStack.back());
         directoryStack.pop_back();
 
-        // TODO: RAII this
-        int currentFd = open(current.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-        release_assert(currentFd > 0);
+        ScopedFileDescriptor currentFd;
+        {
+            Result result = currentFd.open(current, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0, this->showingErrors);
+            if (std::holds_alternative<Error>(result))
+                continue;
+        }
 
         ssize_t ret = 0;
         do
         {
-            ret = getdents64(currentFd, dirBuffer.data(), dirBuffer.size());
+            ret = getdents64(currentFd.getFd(), dirBuffer.data(), dirBuffer.size());
             release_assert(ret >= 0);
 
             uint8_t* nextPtr = dirBuffer.data();
@@ -459,8 +505,6 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
             }
 
         } while (ret != 0);
-
-        release_assert(close(currentFd) == 0);
     }
 }
 
@@ -486,7 +530,9 @@ void CopyQueue::addCopyJob(std::shared_ptr<QueueFileDescriptor> sourceFd, std::s
     {
         // This makes sure the file gets created. Otherwise, it could be deferred to the CopyRunner, but the deferred close would
         // never happen since there's no bytes to copy, so no CopyRunner gets created.
-        destFd->ensureOpened();
+        Result result = destFd->ensureOpened();
+        if (std::holds_alternative<Error>(result))
+            this->onError(std::move(std::get<Error>(result)));
         return;
     }
 
@@ -526,13 +572,12 @@ void CopyQueue::addCopyJobPart(std::shared_ptr<QueueFileDescriptor> sourceFd,
                                std::shared_ptr<QueueFileDescriptor> destFd,
                                off_t offset, off_t size, size_t alignment)
 {
-    debug_assert(this->state == State::Running);
+    debug_assert(this->state == State::Running || this->state == State::Idle);
 
     this->totalBytesToCopy += size;
 
     pthread_mutex_lock(&this->copiesPendingStartMutex);
     {
-        this->keepAliveCount++;
         this->copiesPendingStartCount++;
         this->copiesPendingStart.push_back(new CopyRunner(this, std::move(sourceFd), std::move(destFd), offset, size, alignment));
     }

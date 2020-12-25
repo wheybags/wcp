@@ -1,44 +1,46 @@
 #include "QueueFileDescriptor.hpp"
-#include <unistd.h>
 #include <fcntl.h>
+#include <unistd.h>
 #include "Assert.hpp"
 #include "CopyQueue.hpp"
+#include "Config.hpp"
 
-QueueFileDescriptor::QueueFileDescriptor(CopyQueue& queue, const std::string& path, int oflag, mode_t mode)
-    : queue(queue)
+QueueFileDescriptor::QueueFileDescriptor(CopyQueue& queue, std::string path, int oflag, mode_t mode)
+    : path(std::move(path))
+    , oflag(oflag)
+    , mode(mode)
+    , queue(queue)
 {
-    if (!this->tryOpen(path, oflag, mode, OpenPriority::Low))
-        this->deferredOpenData.reset(new DeferredOpenData{path, oflag, mode});
-
-#ifndef NDEBUG
-    this->debugPath = path;
-#endif
+    if (this->reserveFileDescriptor(OpenPriority::Low))
+        this->doOpen(false); // ignore errors here, it will be seen when the user calls ensureOpened()
 }
 
 QueueFileDescriptor::~QueueFileDescriptor()
 {
-    debug_assert(fd > 2 ||
-                 ((this->deferredOpenData->mode & O_RDONLY) == 0 && (this->deferredOpenData->mode & O_RDWR) == 0));
+    debug_assert(fd > 2 || ((this->mode & O_RDONLY) == 0 && (this->mode & O_RDWR) == 0));
 
     if (fd != -1)
     {
-        release_assert(close(fd) == 0);
+        Result result = myClose(this->fd, this->queue.showingErrors);
+        if (std::holds_alternative<Error>(result))
+            this->queue.onError(std::move(std::get<Error>(result)));
+
         this->queue.fileDescriptorsUsed--;
     }
 }
 
-void QueueFileDescriptor::ensureOpened()
+Result QueueFileDescriptor::ensureOpened()
 {
-    if (this->deferredOpenData)
+    if (fd == -1)
     {
-        while(!this->tryOpen(this->deferredOpenData->path,
-                             this->deferredOpenData->oflag,
-                             this->deferredOpenData->mode,
-                             OpenPriority::High))
-        {}
+        while(!this->reserveFileDescriptor(OpenPriority::High))
+        {
+        }
 
-        this->deferredOpenData.reset();
+        return this->doOpen(this->queue.showingErrors);
     }
+
+    return Success();
 }
 
 int QueueFileDescriptor::getFd() const
@@ -47,7 +49,7 @@ int QueueFileDescriptor::getFd() const
     return this->fd;
 }
 
-bool QueueFileDescriptor::tryOpen(const std::string& path, int oflag, mode_t mode, OpenPriority priority)
+bool QueueFileDescriptor::reserveFileDescriptor(OpenPriority priority)
 {
     uint64_t expected = this->queue.fileDescriptorsUsed;
     uint64_t limit = this->queue.fileDescriptorCap;
@@ -57,7 +59,15 @@ bool QueueFileDescriptor::tryOpen(const std::string& path, int oflag, mode_t mod
     if (expected >= limit || !this->queue.fileDescriptorsUsed.compare_exchange_strong(expected, expected + 1))
         return false;
 
-    this->fd = open(path.c_str(), oflag, mode);
-    debug_assert(this->fd > 2);
     return true;
+}
+
+Result QueueFileDescriptor::doOpen(bool showErrorMessages)
+{
+    OpenResult result = myOpen(this->path, this->oflag, this->mode, showErrorMessages);
+    if (std::holds_alternative<Error>(result))
+        return Error(std::move(std::get<Error>(result)));
+
+    this->fd = std::get<int>(result);
+    return Success();
 }

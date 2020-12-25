@@ -12,7 +12,7 @@ if (WERROR)
     set(WCP_COMPILER_FLAGS ${WCP_COMPILER_FLAGS} -Werror)
 endif()
 
-add_library(wcp_lib CopyRunner.cpp CopyRunner.hpp Assert.hpp Config.hpp CopyQueue.cpp CopyQueue.hpp QueueFileDescriptor.hpp Heap.hpp Heap.cpp Config.cpp tests.cpp Util.hpp Util.cpp wcpMain.cpp wcpMain.hpp QueueFileDescriptor.cpp)
+add_library(wcp_lib CopyRunner.cpp CopyRunner.hpp Assert.hpp Config.hpp CopyQueue.cpp CopyQueue.hpp QueueFileDescriptor.hpp Heap.hpp Heap.cpp Config.cpp tests.cpp Util.hpp Util.cpp wcpMain.cpp wcpMain.hpp QueueFileDescriptor.cpp ScopedFileDescriptor.cpp ScopedFileDescriptor.hpp)
 
 find_package(Threads)
 target_link_libraries(wcp_lib Uring ${CMAKE_THREAD_LIBS_INIT})
