@@ -11,6 +11,7 @@
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wclobbered"
+#pragma GCC diagnostic ignored "-Wunused-function"
 #include "acutest.h"
 #pragma GCC diagnostic pop
 

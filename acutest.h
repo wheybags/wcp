@@ -1678,28 +1678,30 @@ main(int argc, char** argv)
             test_remember_(i);
     }
 
-    /* Guess whether we want to run unit tests as child processes. */
-    if(test_no_exec_ < 0) {
-        test_no_exec_ = 0;
+    test_no_exec_ = 1;
 
-        if(test_count_ <= 1) {
-            test_no_exec_ = 1;
-        } else {
-#ifdef ACUTEST_WIN_
-            if(IsDebuggerPresent())
-                test_no_exec_ = 1;
-#endif
-#ifdef ACUTEST_LINUX_
-            if(test_is_tracer_present_())
-                test_no_exec_ = 1;
-#endif
-#ifdef RUNNING_ON_VALGRIND
-            /* RUNNING_ON_VALGRIND is provided by valgrind.h */
-            if(RUNNING_ON_VALGRIND)
-                test_no_exec_ = 1;
-#endif
-        }
-    }
+//    /* Guess whether we want to run unit tests as child processes. */
+//    if(test_no_exec_ < 0) {
+//        test_no_exec_ = 0;
+//
+//        if(test_count_ <= 1) {
+//            test_no_exec_ = 1;
+//        } else {
+//#ifdef ACUTEST_WIN_
+//            if(IsDebuggerPresent())
+//                test_no_exec_ = 1;
+//#endif
+//#ifdef ACUTEST_LINUX_
+//            if(test_is_tracer_present_())
+//                test_no_exec_ = 1;
+//#endif
+//#ifdef RUNNING_ON_VALGRIND
+//            /* RUNNING_ON_VALGRIND is provided by valgrind.h */
+//            if(RUNNING_ON_VALGRIND)
+//                test_no_exec_ = 1;
+//#endif
+//        }
+//    }
 
     if(test_tap_) {
         /* TAP requires we know test result ("ok", "not ok") before we output
