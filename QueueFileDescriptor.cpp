@@ -35,6 +35,8 @@ Result QueueFileDescriptor::ensureOpened()
     {
         while(!this->reserveFileDescriptor(OpenPriority::High))
         {
+            if constexpr (Config::VALGRIND_MODE)
+                pthread_yield();
         }
 
         return this->doOpen(this->queue.showingErrors);

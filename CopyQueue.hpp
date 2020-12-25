@@ -41,18 +41,15 @@ private:
     void addCopyJobPart(std::shared_ptr<QueueFileDescriptor> sourceFd,
                         std::shared_ptr<QueueFileDescriptor> destFd,
                         off_t offset, off_t size, size_t alignment);
-    void continueCopyJob(CopyRunner* runner);
 
     bool isDone();
     void exitProcess();
     void onError(Error&& error);
 
     void submitLoop();
-    void completionLoop();
     void showProgressLoop();
 
-    static void* staticCallSubmitLoop(void* instance) { reinterpret_cast<CopyQueue*>(instance)->submitLoop(); return nullptr; }
-    static void* staticCallCompletionLoop(void* instance) { reinterpret_cast<CopyQueue*>(instance)->completionLoop(); return nullptr; }
+    static void* staticCallSubmitLoop(void* instance) { reinterpret_cast<CopyQueue *>(instance)->submitLoop(); return nullptr; }
     static void* staticCallShowProgressLoop(void* instance) { reinterpret_cast<CopyQueue*>(instance)->showProgressLoop(); return nullptr; }
 
 private:
@@ -65,12 +62,10 @@ private:
     io_uring ring = {};
 
     std::deque<CopyRunner*> copiesPendingStart;
-    std::deque<CopyRunner*> copiesPendingContinue;
     pthread_mutex_t copiesPendingStartMutex = PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP;
-
     std::atomic_uint32_t copiesPendingStartCount = 0;
-    std::atomic_uint32_t keepAliveCount = 0;
 
+    std::atomic_uint32_t keepAliveCount = 0;
     std::atomic_uint32_t submissionsRunning = 0;
 
     std::atomic<size_t> totalBytesToCopy = 0;
@@ -92,9 +87,7 @@ private:
     };
     std::atomic<State> state = State::Idle;
 
-    pthread_t completionThread;
     pthread_t submitThread;
-
     pthread_t showProgressThread;
     pthread_mutex_t progressEndMutex = PTHREAD_MUTEX_INITIALIZER;
 

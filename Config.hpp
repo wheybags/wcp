@@ -2,9 +2,10 @@
 
 namespace Config
 {
-    extern const bool DEBUG_COPY_OPS;
+    static constexpr bool DEBUG_COPY_OPS = false;
     extern bool DEBUG_FORCE_PARTIAL_READS;
     extern bool DEBUG_FORCE_PARTIAL_WRITES;
     extern bool NO_CLEANUP;
+    static constexpr bool VALGRIND_MODE = false;
 }
 

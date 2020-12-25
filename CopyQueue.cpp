@@ -64,35 +64,47 @@ void CopyQueue::onError(Error&& error)
 
 void CopyQueue::submitLoop()
 {
-    pthread_setname_np(pthread_self(), "Submit thread");
+    pthread_setname_np(pthread_self(), "submit");
 
     uint8_t* nextBuffer = nullptr;
+    std::deque<CopyRunner*> copiesPendingContinue;
 
-    // TODO: avoid busy looping? Or maybe it's fine? Not really sure tbh.
     while (true)
     {
-        while(this->copiesPendingStartCount > 0 &&
-              // Rate limit to avoid overflowing the completion queue
-              (this->completionRingSize - this->submissionsRunning) >= CopyRunner::MAX_JOBS_PER_RUNNER)
+        if constexpr (Config::VALGRIND_MODE)
+            pthread_yield();
+
+        // SUBMIT
+        bool added;
+        do
         {
+            added = false;
+
+            size_t waitingForStart = this->copiesPendingStartCount + copiesPendingContinue.size();
+            bool rateLimited = (this->completionRingSize - this->submissionsRunning) < CopyRunner::MAX_JOBS_PER_RUNNER;
+
+            if (waitingForStart == 0 || rateLimited)
+                break;
+
             if (!nextBuffer)
                 nextBuffer = this->copyBufferHeap.getBlock();
 
             CopyRunner* toAdd = nullptr;
-            pthread_mutex_lock(&this->copiesPendingStartMutex);
+            if (!copiesPendingContinue.empty())
             {
-                debug_assert(!this->copiesPendingContinue.empty() || !this->copiesPendingStart.empty());
+                toAdd = copiesPendingContinue.front();
+                debug_assert(!toAdd->needsBuffer());
 
-                if (!this->copiesPendingContinue.empty())
-                {
-                    toAdd = this->copiesPendingContinue.front();
-                    debug_assert(!toAdd->needsBuffer());
+                copiesPendingContinue.pop_front();
+            }
 
-                    this->copiesPendingContinue.pop_front();
-                }
-                else if (nextBuffer)
+            if (!toAdd && nextBuffer && this->copiesPendingStartCount > 0)
+            {
+                pthread_mutex_lock(&this->copiesPendingStartMutex);
                 {
-                    CopyRunner* temp = this->copiesPendingStart.front();
+                    debug_assert(!this->copiesPendingStart.empty());
+
+                    CopyRunner *temp = this->copiesPendingStart.front();
                     debug_assert(temp->needsBuffer());
 
                     temp->giveBuffer(nextBuffer);
@@ -100,43 +112,29 @@ void CopyQueue::submitLoop()
                     toAdd = temp;
 
                     this->copiesPendingStart.pop_front();
+                    this->copiesPendingStartCount--;
                 }
+                pthread_mutex_unlock(&this->copiesPendingStartMutex);
             }
-            pthread_mutex_unlock(&this->copiesPendingStartMutex);
 
             if (toAdd)
             {
                 Result result = toAdd->addToBatch();
-                this->copiesPendingStartCount--;
 
                 if (std::holds_alternative<Error>(result))
                 {
                     delete toAdd;
                     this->onError(std::move(std::get<Error>(result)));
                 }
+                else
+                {
+                    added = true;
+                }
             }
-        }
+        } while(added);
 
-        if (this->isDone())
-        {
-            if (Config::DEBUG_COPY_OPS)
-                puts("SUBMIT THREAD EXIT");
-
-            if (nextBuffer)
-                this->copyBufferHeap.returnBlock(nextBuffer);
-
-            return;
-        }
-    }
-}
-
-void CopyQueue::completionLoop()
-{
-    pthread_setname_np(pthread_self(), "Completion thread");
-
-    while (true)
-    {
-        while (this->keepAliveCount)
+        // COMPLETE
+        if (this->submissionsRunning)
         {
             io_uring_cqe *cqe = nullptr;
 
@@ -174,7 +172,7 @@ void CopyQueue::completionLoop()
             }
             else if(std::holds_alternative<CopyRunner::RescheduleTag>(runnerResult))
             {
-                this->continueCopyJob(eventData->copyData);
+                copiesPendingContinue.push_back(eventData->copyData);
             }
 
             io_uring_cqe_seen(&ring, cqe);
@@ -188,6 +186,10 @@ void CopyQueue::completionLoop()
 
             if (completionAction == OnCompletionAction::ExitProcessNoCleanup)
                 this->exitProcess();
+
+            if (nextBuffer)
+                this->copyBufferHeap.returnBlock(nextBuffer);
+
             return;
         }
     }
@@ -257,7 +259,7 @@ void CopyQueue::showProgressLoop()
         winsize winsize = {};
         ioctl(STDOUT_FILENO, TIOCGWINSZ, &winsize);
 
-        if (!firstShow)
+        if (!firstShow && !Config::VALGRIND_MODE) // don't overwrite valgrind output
         {
             // return to start of line, and move three lines up (ie, move cursor to the top left of our draw area)
             fputs("\r\033[2A", stderr);
@@ -362,10 +364,9 @@ void CopyQueue::start()
     this->totalBytesCopied = 0;
 
     release_assert(pthread_create(&this->submitThread, nullptr, CopyQueue::staticCallSubmitLoop, this) == 0);
-    release_assert(pthread_create(&this->completionThread, nullptr, CopyQueue::staticCallCompletionLoop, this) == 0);
 
     // Don't try to show a progress bar if we're not outputting to a terminal
-    this->showingProgress = isatty(STDERR_FILENO) && isatty(STDOUT_FILENO) && getenv("TERM");
+    this->showingProgress = isatty(STDERR_FILENO) && getenv("TERM");
     if (this->showingProgress)
     {
         pthread_mutex_lock(&this->progressEndMutex);
@@ -379,13 +380,11 @@ void CopyQueue::join(OnCompletionAction onCompletionAction)
     this->state = State::AdditionComplete;
     this->completionAction = onCompletionAction;
 
-    pthread_join(this->completionThread, nullptr);
-    // completionThread will probably terminate the process for us before we get here.
+    pthread_join(this->submitThread, nullptr);
+    // submitThread will probably terminate the process for us before we get here.
     // Check here too just in case, as there is a race on setting this->completionAction.
     if (this->completionAction == OnCompletionAction::ExitProcessNoCleanup)
         this->exitProcess();
-
-    pthread_join(this->submitThread, nullptr);
 
     debug_assert(this->submissionsRunning == 0);
     debug_assert(this->copyBufferHeap.getFreeBlocksCount() == this->copyBufferHeap.getBlockCount());
@@ -578,18 +577,8 @@ void CopyQueue::addCopyJobPart(std::shared_ptr<QueueFileDescriptor> sourceFd,
 
     pthread_mutex_lock(&this->copiesPendingStartMutex);
     {
-        this->copiesPendingStartCount++;
         this->copiesPendingStart.push_back(new CopyRunner(this, std::move(sourceFd), std::move(destFd), offset, size, alignment));
-    }
-    pthread_mutex_unlock(&this->copiesPendingStartMutex);
-}
-
-void CopyQueue::continueCopyJob(CopyRunner* runner)
-{
-    pthread_mutex_lock(&this->copiesPendingStartMutex);
-    {
         this->copiesPendingStartCount++;
-        this->copiesPendingContinue.push_back(runner);
     }
     pthread_mutex_unlock(&this->copiesPendingStartMutex);
 }
