@@ -7,6 +7,7 @@ base_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 only_wcp="false"
 show_wcp_progress="false"
 time_only="false"
+iterations=1
 bad_arg="false"
 
 while [[ $# -gt 0 ]]; do
@@ -34,6 +35,12 @@ while [[ $# -gt 0 ]]; do
           shift
         ;;
 
+        -i|--iterations)
+          shift
+          iterations="$1"
+          shift
+        ;;
+
         *)
             bad_arg="true"
             echo "Unrecognised option: $1" >&2
@@ -49,6 +56,7 @@ if [ "$#" -ne 2 ] || [ "$bad_arg" == "true" ]; then
     echo "  -w|--only-wcp         Don't run other programs for comparison" >&2
     echo "  --show-wcp-progress   Show the wcp progress bar. Hidden by default." >&2
     echo "  --time-only           Output only the time of wcp. Implies -w." >&2
+    echo "  -i|--iterations N     Run each test N times, and report the minimum result." >&2
     exit 1
 fi
 
@@ -89,24 +97,30 @@ generate_data() {
 }
 
 run_test() {
-    message -n "Preparing for test... "
+    local seconds=99999999
 
-    if [ -e "$TEST_DEST" ]; then
-        rm -rf "$TEST_DEST"
-    fi
-    
-    sync
-    sudo bash -c "echo 3 > /proc/sys/vm/drop_caches"
-    message "done"
+    for ((i=1; i<=iterations; i++)); do
+      message -n "Preparing for test... "
 
-    message -n "testing $*... "
-    /usr/bin/time -o /tmp/wcp_bench_ts_temp -f "%e" $@ "$TEST_DATA"/ "$TEST_DEST"/
-    message "done"
+      if [ -e "$TEST_DEST" ]; then
+          rm -rf "$TEST_DEST"
+      fi
 
-    local seconds
+      sync
+      sudo bash -c "echo 3 > /proc/sys/vm/drop_caches"
+      message "done"
+
+      message -n "testing $*... "
+      /usr/bin/time -o /tmp/wcp_bench_ts_temp -f "%e" $@ "$TEST_DATA"/ "$TEST_DEST"/
+
+      if [ "$(echo "$(cat /tmp/wcp_bench_ts_temp) < $seconds" | bc)" == 1 ]; then
+          seconds="$(cat /tmp/wcp_bench_ts_temp)"
+      fi
+      message "done in $(cat /tmp/wcp_bench_ts_temp)s"
+    done
+
     local mibps
     local filesps
-    seconds=$(cat /tmp/wcp_bench_ts_temp)
     if [ "$seconds" == "0.00" ]; then
       mibps="NaN"
       filesps="NaN"
