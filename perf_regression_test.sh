@@ -6,8 +6,8 @@ base_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 old_perf_file="$base_dir/perf_data/latest"
 
 run_bench() {
-  echo "running 1K test">&2; "$base_dir/bench.sh" --time-only --iterations 10 1K 20000
-  echo "running 1M test">&2; "$base_dir/bench.sh" --time-only --iterations 10 1M 2000
+  echo "running 1K test">&2; "$base_dir/bench.sh" --time-only --iterations 10 1K 200000
+  echo "running 1M test">&2; "$base_dir/bench.sh" --time-only --iterations 10 1M 7000
   echo "running 512M test">&2; "$base_dir/bench.sh" --time-only --iterations 5 512M 20
 }
 

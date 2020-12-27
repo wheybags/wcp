@@ -89,10 +89,16 @@ generate_data() {
     local file_size="$2"
     local count="$3"
 
+    local pids=()
     for i in $(seq 1 "$count"); do
         message "    Generating file $i/$count"
         mkdir -p "$test_folder/$file_size"
-        chronic dd if=/dev/urandom of="$test_folder/$file_size/$i" bs="$file_size" count=1 2>&1
+        dd if=/dev/urandom of="$test_folder/$file_size/$i" bs="$file_size" count=1 2>/dev/null &
+        pids[${i}]=$!
+    done
+
+    for pid in ${pids[*]}; do
+        wait $pid
     done
 }
 
