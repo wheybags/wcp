@@ -17,6 +17,11 @@ public:
     void operator=(const QueueFileDescriptor&) = delete;
 
     [[nodiscard]] Result ensureOpened();
+    void notifyClosed();
+
+    bool hasBeenClosed() const { return this->fd == CLOSED_VAL; }
+    bool isOpen() const { return this->fd > 0; }
+
     int getFd() const;
     const std::string& getPath() const { return this->path; }
 
@@ -31,7 +36,10 @@ private:
     mode_t mode;
 
     CopyQueue& queue;
-    int fd = -1;
+
+    static constexpr int NEVER_OPENED_VAL = -1;
+    static constexpr int CLOSED_VAL = -2;
+    int fd = NEVER_OPENED_VAL;
 };
 
 

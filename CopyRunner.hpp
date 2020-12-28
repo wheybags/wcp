@@ -16,7 +16,8 @@ public:
         enum class Type
         {
             Read,
-            Write
+            Write,
+            Close
         };
 
         CopyRunner* copyData;
@@ -25,18 +26,19 @@ public:
     };
 
     CopyRunner(CopyQueue* queue,
-               std::shared_ptr<QueueFileDescriptor> sourceFd,
-               std::shared_ptr<QueueFileDescriptor> destFd,
+               QueueFileDescriptor* sourceFd,
+               QueueFileDescriptor* destFd,
                off_t offset,
                off_t size,
-               size_t alignment);
+               size_t alignment,
+               int32_t* chunkCount);
     ~CopyRunner();
 
     CopyRunner() = delete;
     CopyRunner(const CopyRunner&) = delete;
     CopyRunner& operator=(const CopyRunner&) = delete;
 
-    bool needsBuffer() const { return this->buffer == nullptr; }
+    bool needsBuffer() const { return this->buffer == nullptr && this->size > 0; }
     void giveBuffer(uint8_t* buffer);
 
     [[nodiscard]] Result addToBatch();
@@ -45,7 +47,14 @@ public:
     class RescheduleTag {};
     class FinishedTag {};
     using RunnerResult = std::variant<Error, RescheduleTag, FinishedTag, ContinueTag>;
-    RunnerResult onCompletionEvent(EventData::Type type, __s32 result);
+    RunnerResult onCompletionEvent(EventData& eventData, __s32 result);
+
+private:
+    struct io_uring_sqe* getSqe();
+    void doSubmit();
+
+    Result submitReadWriteCommands();
+    Result submitCloseCommands();
 
 public:
     static constexpr int32_t MAX_JOBS_PER_RUNNER = 2;
@@ -55,11 +64,12 @@ private:
     std::optional<Error> deferredError;
 
     CopyQueue* queue;
-    std::shared_ptr<QueueFileDescriptor> sourceFd;
-    std::shared_ptr<QueueFileDescriptor> destFd;
+    QueueFileDescriptor* sourceFd;
+    QueueFileDescriptor* destFd;
     off_t offset;
     off_t size;
     size_t alignment;
+    int32_t* chunksRemaining;
 
     uint8_t* buffer = nullptr;
     uint8_t* bufferAligned = nullptr;
@@ -69,7 +79,10 @@ private:
 
     int32_t jobsRunning = 0;
 
-    EventData readData {this, std::numeric_limits<__s32>::max(), EventData::Type::Read};
-    EventData writeData {this, std::numeric_limits<__s32>::max(), EventData::Type::Write};
+    EventData eventDataBuffers[2] =
+    {
+        {this, std::numeric_limits<__s32>::max(), EventData::Type::Read},
+        {this, std::numeric_limits<__s32>::max(), EventData::Type::Write},
+    };
 };
 

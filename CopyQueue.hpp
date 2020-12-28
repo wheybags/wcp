@@ -37,10 +37,13 @@ private:
     friend class CopyRunner;
     friend class QueueFileDescriptor;
 
-    void addCopyJob(std::shared_ptr<QueueFileDescriptor> sourceFd, std::shared_ptr<QueueFileDescriptor> destFd, const struct stat64& st);
-    void addCopyJobPart(std::shared_ptr<QueueFileDescriptor> sourceFd,
-                        std::shared_ptr<QueueFileDescriptor> destFd,
-                        off_t offset, off_t size, size_t alignment);
+    void addCopyJob(const std::string& src, const std::string& dest, const struct stat64& st);
+    void addCopyJobPart(QueueFileDescriptor* sourceFd,
+                        QueueFileDescriptor* destFd,
+                        off_t offset,
+                        off_t size,
+                        size_t alignment,
+                        int32_t* chunkCount);
 
     bool isDone();
     void exitProcess();

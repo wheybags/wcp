@@ -1,6 +1,5 @@
 #include "QueueFileDescriptor.hpp"
 #include <fcntl.h>
-#include <unistd.h>
 #include "Assert.hpp"
 #include "CopyQueue.hpp"
 #include "Config.hpp"
@@ -17,21 +16,14 @@ QueueFileDescriptor::QueueFileDescriptor(CopyQueue& queue, std::string path, int
 
 QueueFileDescriptor::~QueueFileDescriptor()
 {
-    debug_assert(fd > 2 || ((this->mode & O_RDONLY) == 0 && (this->mode & O_RDWR) == 0));
-
-    if (fd != -1)
-    {
-        Result result = myClose(this->fd, this->queue.showingErrors);
-        if (std::holds_alternative<Error>(result))
-            this->queue.onError(std::move(std::get<Error>(result)));
-
-        this->queue.fileDescriptorsUsed--;
-    }
+    debug_assert(fd == CLOSED_VAL || (fd == NEVER_OPENED_VAL && (this->mode & O_RDONLY) == 0 && (this->mode & O_RDWR) == 0));
 }
 
 Result QueueFileDescriptor::ensureOpened()
 {
-    if (fd == -1)
+    debug_assert(fd != CLOSED_VAL);
+
+    if (fd == NEVER_OPENED_VAL)
     {
         while(!this->reserveFileDescriptor(OpenPriority::High))
         {
@@ -43,6 +35,12 @@ Result QueueFileDescriptor::ensureOpened()
     }
 
     return Success();
+}
+
+void QueueFileDescriptor::notifyClosed()
+{
+    this->fd = CLOSED_VAL;
+    this->queue.fileDescriptorsUsed--;
 }
 
 int QueueFileDescriptor::getFd() const

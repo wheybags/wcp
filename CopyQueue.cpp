@@ -104,11 +104,14 @@ void CopyQueue::submitLoop()
                 {
                     debug_assert(!this->copiesPendingStart.empty());
 
-                    CopyRunner *temp = this->copiesPendingStart.front();
-                    debug_assert(temp->needsBuffer());
+                    CopyRunner* temp = this->copiesPendingStart.front();
 
-                    temp->giveBuffer(nextBuffer);
-                    nextBuffer = nullptr;
+                    if (temp->needsBuffer())
+                    {
+                        temp->giveBuffer(nextBuffer);
+                        nextBuffer = nullptr;
+                    }
+
                     toAdd = temp;
 
                     this->copiesPendingStart.pop_front();
@@ -146,21 +149,8 @@ void CopyQueue::submitLoop()
             release_assert( err == 0);
 
             auto *eventData = reinterpret_cast<CopyRunner::EventData *>(cqe->user_data);
-            __s32 result = cqe->res;
-            if (eventData->resultOverride != std::numeric_limits<__s32>::max())
-            {
-                // Don't allow spoofing to drop a real error
-                if (cqe->res >= 0)
-                {
-                    // only allow spoofing an error, or a shorter-than-real io event, never a longer-than-real one.
-                    if (eventData->resultOverride < 0 || eventData->resultOverride <= cqe->res)
-                        result = eventData->resultOverride;
-                }
 
-                eventData->resultOverride = std::numeric_limits<__s32>::max();
-            }
-
-            CopyRunner::RunnerResult runnerResult = eventData->copyData->onCompletionEvent(eventData->type, result);
+            CopyRunner::RunnerResult runnerResult = eventData->copyData->onCompletionEvent(*eventData, cqe->res);
             if (std::holds_alternative<CopyRunner::FinishedTag>(runnerResult))
             {
                 delete eventData->copyData;
@@ -492,10 +482,7 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
                         didStat = true;
                     }
 
-                    auto sourceFd = std::make_shared<QueueFileDescriptor>(*this, fullPath, O_RDONLY | O_DIRECT | O_CLOEXEC);
-                    auto destFd = std::make_shared<QueueFileDescriptor>(*this, destPath, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, sb.st_mode);
-
-                    this->addCopyJob(sourceFd, destFd, sb);
+                    this->addCopyJob(fullPath, destPath, sb);
                 }
                 else
                 {
@@ -517,21 +504,17 @@ void CopyQueue::addFileCopy(const std::string& from, const std::string& dest, co
         fromStatBuffer = tmp.get();
     }
 
-    auto sourceFd = std::make_shared<QueueFileDescriptor>(*this, from, O_RDONLY | O_DIRECT | O_CLOEXEC);
-    auto destFd = std::make_shared<QueueFileDescriptor>(*this, dest, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, fromStatBuffer->st_mode);
-
-    this->addCopyJob(sourceFd, destFd, *fromStatBuffer);
+    this->addCopyJob(from, dest, *fromStatBuffer);
 }
 
-void CopyQueue::addCopyJob(std::shared_ptr<QueueFileDescriptor> sourceFd, std::shared_ptr<QueueFileDescriptor> destFd, const struct stat64& st)
+void CopyQueue::addCopyJob(const std::string& src, const std::string& dest, const struct stat64& st)
 {
+    auto* sourceFd = new QueueFileDescriptor(*this, src, O_RDONLY | O_DIRECT | O_CLOEXEC);
+    auto* destFd = new QueueFileDescriptor(*this, dest, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, st.st_mode);
+
     if (st.st_size == 0)
     {
-        // This makes sure the file gets created. Otherwise, it could be deferred to the CopyRunner, but the deferred close would
-        // never happen since there's no bytes to copy, so no CopyRunner gets created.
-        Result result = destFd->ensureOpened();
-        if (std::holds_alternative<Error>(result))
-            this->onError(std::move(std::get<Error>(result)));
+        this->addCopyJobPart(sourceFd, destFd, 0, 0, 0, new int32_t(1));
         return;
     }
 
@@ -558,18 +541,32 @@ void CopyQueue::addCopyJob(std::shared_ptr<QueueFileDescriptor> sourceFd, std::s
 
     release_assert(chunkSize > 0);
 
+    int32_t chunkCount = st.st_size / chunkSize;
+    if (st.st_size % chunkSize != 0)
+        chunkCount++;
+
+    int32_t* chunksDoneTracker = new int32_t(chunkCount);
+
+    int32_t i = 0;
     off_t offset = 0;
     while (offset != st.st_size)
     {
         off_t count = std::min(off_t(chunkSize), st.st_size - offset);
-        this->addCopyJobPart(sourceFd, destFd, offset, count, requiredAlignment);
+
+        this->addCopyJobPart(sourceFd, destFd, offset, count, requiredAlignment, chunksDoneTracker);
         offset += count;
+        i++;
     }
+
+    debug_assert(chunkCount == i);
 }
 
-void CopyQueue::addCopyJobPart(std::shared_ptr<QueueFileDescriptor> sourceFd,
-                               std::shared_ptr<QueueFileDescriptor> destFd,
-                               off_t offset, off_t size, size_t alignment)
+void CopyQueue::addCopyJobPart(QueueFileDescriptor* sourceFd,
+                               QueueFileDescriptor* destFd,
+                               off_t offset,
+                               off_t size,
+                               size_t alignment,
+                               int32_t* chunkCount)
 {
     debug_assert(this->state == State::Running || this->state == State::Idle);
 
@@ -577,7 +574,13 @@ void CopyQueue::addCopyJobPart(std::shared_ptr<QueueFileDescriptor> sourceFd,
 
     pthread_mutex_lock(&this->copiesPendingStartMutex);
     {
-        this->copiesPendingStart.push_back(new CopyRunner(this, std::move(sourceFd), std::move(destFd), offset, size, alignment));
+        this->copiesPendingStart.push_back(new CopyRunner(this,
+                                                          sourceFd,
+                                                          destFd,
+                                                          offset,
+                                                          size,
+                                                          alignment,
+                                                          chunkCount));
         this->copiesPendingStartCount++;
     }
     pthread_mutex_unlock(&this->copiesPendingStartMutex);
