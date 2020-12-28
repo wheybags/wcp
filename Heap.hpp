@@ -17,7 +17,7 @@ public:
     Heap& operator=(const Heap&) = delete;
 
     uint8_t* getBlock();
-    void returnBlock(const uint8_t* block);
+    void returnBlock(uint8_t* block);
 
     size_t getBlockCount() const { return this->blocks; }
     size_t getBlockSize() const { return this->blockSize; }
@@ -27,7 +27,8 @@ public:
     size_t getFreeBlocksCount() const;
 
 private:
-    std::atomic_bool* usedList;
+    std::atomic_bool* usedList = nullptr;
+    std::atomic_uint32_t valgrindModeUsedCount = 0;
     uint8_t* data = nullptr;
     size_t blocks = 0;
     size_t blockSize = 0;
