@@ -12,16 +12,15 @@
 #include "Util.hpp"
 #include "ScopedFileDescriptor.hpp"
 
-CopyQueue::CopyQueue(size_t ringSize, size_t fileDescriptorCap, Heap&& heap)
-    : ringSize(ringSize)
-    , fileDescriptorCap(fileDescriptorCap)
+CopyQueue::CopyQueue(size_t requestedRingSize, size_t fileDescriptorCap, Heap&& heap)
+    : fileDescriptorCap(fileDescriptorCap)
     , copyBufferHeap(std::move(heap))
 {
     release_assert(this->fileDescriptorCap >= CopyQueue::minimumFileDescriptorCap());
 
     io_uring_params params = {};
-    release_assert(io_uring_queue_init_params(this->ringSize, &this->ring, &params) == 0);
-    this->completionRingSize = params.cq_entries;
+    release_assert(io_uring_queue_init_params(requestedRingSize, &this->ring, &params) == 0);
+    this->ringSize = params.sq_entries;
 }
 
 CopyQueue::~CopyQueue()
@@ -75,13 +74,14 @@ void CopyQueue::submitLoop()
             pthread_yield();
 
         // SUBMIT
-        bool added;
-        do
+        int32_t runnersAdded = 0;
+        bool doneAdding = false;
+        while (!doneAdding)
         {
-            added = false;
+            doneAdding = true;
 
             size_t waitingForStart = this->copiesPendingStartCount + copiesPendingContinue.size();
-            bool rateLimited = (this->completionRingSize - this->submissionsRunning) < CopyRunner::MAX_JOBS_PER_RUNNER;
+            bool rateLimited = (this->ringSize - this->submissionsRunning) < CopyRunner::MAX_JOBS_PER_RUNNER;
 
             if (waitingForStart == 0 || rateLimited)
                 break;
@@ -131,22 +131,32 @@ void CopyQueue::submitLoop()
                 }
                 else
                 {
-                    added = true;
+                    doneAdding = false;
+                    runnersAdded++;
                 }
             }
-        } while(added);
+        }
 
-        // COMPLETE
-        if (this->submissionsRunning)
+        if (runnersAdded)
         {
-            io_uring_cqe *cqe = nullptr;
-
-            int err = 0;
+            int ret = 0;
             do
             {
-                err = io_uring_wait_cqe_nr(&ring, &cqe, 1);
-            } while(err == -EINTR || err == -EAGAIN);
-            release_assert( err == 0);
+                ret = io_uring_submit(&this->ring);
+            }
+            while (ret == -EAGAIN || ret == -EINTR);
+            release_assert(ret > 0);
+        }
+
+        // COMPLETE
+        while (this->submissionsRunning)
+        {
+            io_uring_cqe *cqe = nullptr;
+            int err = io_uring_peek_cqe(&ring, &cqe);
+            release_assert(err == 0 || err == -EINTR || err == -EAGAIN);
+
+            if (err != 0)
+                break;
 
             auto *eventData = reinterpret_cast<CopyRunner::EventData *>(cqe->user_data);
 

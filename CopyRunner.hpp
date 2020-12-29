@@ -51,7 +51,6 @@ public:
 
 private:
     struct io_uring_sqe* getSqe();
-    void doSubmit();
 
     Result submitReadWriteCommands();
     Result submitCloseCommands();

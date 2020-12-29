@@ -71,19 +71,6 @@ struct io_uring_sqe* CopyRunner::getSqe()
     return sqe;
 }
 
-void CopyRunner::doSubmit()
-{
-    debug_assert(this->jobsRunning <= MAX_JOBS_PER_RUNNER);
-
-    int ret = 0;
-    do
-    {
-        ret = io_uring_submit(&queue->ring);
-    }
-    while (ret == -EAGAIN || ret == -EINTR);
-    release_assert(ret > 0);
-}
-
 Result CopyRunner::submitReadWriteCommands()
 {
     {
@@ -188,8 +175,6 @@ Result CopyRunner::submitReadWriteCommands()
         sqe->user_data = reinterpret_cast<__u64>(&this->eventDataBuffers[1]);
     }
 
-    this->doSubmit();
-
     return Success();
 }
 
@@ -221,8 +206,6 @@ Result CopyRunner::submitCloseCommands()
         this->eventDataBuffers[1].type = EventData::Type::Close;
     }
 
-    this->doSubmit();
-
     return Success();
 }
 
@@ -234,6 +217,8 @@ Result CopyRunner::addToBatch()
         return this->submitReadWriteCommands();
     else
         return this->submitCloseCommands();
+
+    debug_assert(this->jobsRunning <= MAX_JOBS_PER_RUNNER);
 }
 
 CopyRunner::RunnerResult CopyRunner::onCompletionEvent(EventData& eventData, __s32 result)

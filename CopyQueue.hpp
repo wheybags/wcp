@@ -14,7 +14,7 @@ class CopyRunner;
 class CopyQueue
 {
 public:
-    explicit CopyQueue(size_t ringSize, size_t fileDescriptorCap, Heap&& heap);
+    explicit CopyQueue(size_t requestedRingSize, size_t fileDescriptorCap, Heap&& heap);
     ~CopyQueue();
 
     void addRecursiveCopy(std::string from, std::string dest);
@@ -57,7 +57,6 @@ private:
 
 private:
     size_t ringSize;
-    size_t completionRingSize;
     size_t fileDescriptorCap;
     std::atomic<OnCompletionAction> completionAction = OnCompletionAction::Return;
 
@@ -69,7 +68,7 @@ private:
     std::atomic_uint32_t copiesPendingStartCount = 0;
 
     std::atomic_uint32_t keepAliveCount = 0;
-    std::atomic_uint32_t submissionsRunning = 0;
+    uint32_t submissionsRunning = 0;
 
     std::atomic<size_t> totalBytesToCopy = 0;
     std::atomic<size_t> totalBytesCopied = 0;

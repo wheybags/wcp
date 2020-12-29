@@ -42,7 +42,7 @@ int wcpMain(int argc, char** argv)
     size_t oneGig = 1024 * 1024 * 1024;
     size_t ramQuota = std::max(getPhysicalRamSize() / 10, oneGig);
     size_t blockSize = 256 * 1024 * 1024; // 256M
-    size_t ringSize = 100;
+    size_t ringSize = ramQuota / blockSize;
     CopyQueue copyQueue(ringSize, fileDescriptorCap, Heap(ramQuota / blockSize, blockSize));
     copyQueue.start();
 
