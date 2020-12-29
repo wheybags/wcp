@@ -221,6 +221,11 @@ Result CopyRunner::addToBatch()
     debug_assert(this->jobsRunning <= MAX_JOBS_PER_RUNNER);
 }
 
+bool CopyRunner::needsFileDescriptors() const
+{
+    return !this->sourceFd->isOpen() || !this->destFd->isOpen();
+}
+
 CopyRunner::RunnerResult CopyRunner::onCompletionEvent(EventData& eventData, __s32 result)
 {
     this->jobsRunning--;

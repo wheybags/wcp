@@ -2,6 +2,8 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <spawn.h>
+#include <dirent.h>
+#include <sys/resource.h>
 #include "CopyQueue.hpp"
 #include "CopyRunner.hpp"
 #include "Config.hpp"
@@ -242,6 +244,53 @@ public:
         });
     }
 
+    static void FileDescriptorStarvation()
+    {
+        // https://stackoverflow.com/a/65007429/681026
+        auto countOpenFds = []()
+        {
+            DIR *dp = opendir("/proc/self/fd");
+            release_assert(dp);
+
+            int32_t count = -3; // '.', '..', dp
+
+            while (readdir(dp) != nullptr)
+                count++;
+
+            release_assert(closedir(dp) == 0);
+
+            return count;
+        };
+
+        // _really_ limit things
+        rlimit64 openFilesLimit = {};
+        getrlimit64(RLIMIT_NOFILE, &openFilesLimit);
+        openFilesLimit.rlim_cur = countOpenFds() + CopyQueue::minimumFileDescriptorCap();
+        release_assert(setrlimit64(RLIMIT_NOFILE, &openFilesLimit) == 0);
+
+        size_t oneGig = 1024 * 1024 * 1024;
+        size_t ramQuota = oneGig;
+        size_t blockSize = 256 * 1024 * 1024; // 256M
+        size_t ringSize = 100;
+        size_t fileDescriptorCap = CopyQueue::minimumFileDescriptorCap();
+        auto queue = std::make_unique<CopyQueue>(ringSize, fileDescriptorCap, Heap(ramQuota / blockSize, blockSize));
+        queue->start();
+
+        std::string srcFolder = getTestDataFolder(1024 * 1024 * 512, 5);
+        std::string destPath = getProjectBasePath() + "/test_dest";
+
+        std::filesystem::remove_all(destPath);
+
+        queue->addRecursiveCopy(srcFolder, destPath);
+        queue->join();
+
+        assertFoldersEqual(srcFolder, destPath);
+
+        // reset to the default
+        openFilesLimit.rlim_cur = 1024;
+        release_assert(setrlimit64(RLIMIT_NOFILE, &openFilesLimit) == 0);
+    }
+
     static void ResolveCopyDestination()
     {
         Config::DEBUG_FORCE_PARTIAL_READS = false;
@@ -269,6 +318,12 @@ public:
             int argc = 3;
             const char *argv[] = {"wcp", a.c_str(), b.c_str(), nullptr};
             wcpMain(argc, (char **) argv);
+
+            // reset open files limit to default
+            rlimit64 openFilesLimit = {};
+            getrlimit64(RLIMIT_NOFILE, &openFilesLimit);
+            openFilesLimit.rlim_cur = 1024;
+            release_assert(setrlimit64(RLIMIT_NOFILE, &openFilesLimit) == 0);
         };
 
         call(source, dest);
@@ -336,6 +391,7 @@ TEST_LIST =
     {"CopySmallFileNotAlignedSize", TestContainer::CopySmallFileNotAlignedSize},
     {"ResolveCopyDestination", TestContainer::ResolveCopyDestination},
     {"TruncatedDuringCopy", TestContainer::TruncatedDuringCopy},
+    {"FileDescriptorStarvation", TestContainer::FileDescriptorStarvation},
     {"CopyLargeFolder", TestContainer::CopyLargeFolder},
     {nullptr, nullptr }
 };

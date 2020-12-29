@@ -106,16 +106,20 @@ void CopyQueue::submitLoop()
 
                     CopyRunner* temp = this->copiesPendingStart.front();
 
-                    if (temp->needsBuffer())
+                    bool outOfFds = this->fileDescriptorCap - this->fileDescriptorsUsed < RESERVED_HIGH_PRIORITY_FD_COUNT;
+                    if (!outOfFds || !temp->needsFileDescriptors())
                     {
-                        temp->giveBuffer(nextBuffer);
-                        nextBuffer = nullptr;
+                        if (temp->needsBuffer())
+                        {
+                            temp->giveBuffer(nextBuffer);
+                            nextBuffer = nullptr;
+                        }
+
+                        toAdd = temp;
+
+                        this->copiesPendingStart.pop_front();
+                        this->copiesPendingStartCount--;
                     }
-
-                    toAdd = temp;
-
-                    this->copiesPendingStart.pop_front();
-                    this->copiesPendingStartCount--;
                 }
                 pthread_mutex_unlock(&this->copiesPendingStartMutex);
             }

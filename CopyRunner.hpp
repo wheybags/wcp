@@ -38,6 +38,8 @@ public:
     CopyRunner(const CopyRunner&) = delete;
     CopyRunner& operator=(const CopyRunner&) = delete;
 
+    bool needsFileDescriptors() const;
+
     bool needsBuffer() const { return this->buffer == nullptr && this->size > 0; }
     void giveBuffer(uint8_t* buffer);
 
