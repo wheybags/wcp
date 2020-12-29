@@ -56,7 +56,7 @@ int wcpMain(int argc, char** argv)
     release_assert(destStatResult == 0 || destStatResult == ENOENT);
 
     {
-        std::filesystem::path destRealParent = dest;
+        std::filesystem::path destRealParent = std::filesystem::absolute(dest);
         if (!destRealParent.has_filename()) // This is needed to account for if dest has a trailing slash
             destRealParent = destRealParent.parent_path();
         destRealParent = destRealParent.parent_path();

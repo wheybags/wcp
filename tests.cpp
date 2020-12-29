@@ -207,6 +207,19 @@ void clearTargetFile(const std::string& path)
     TEST_ASSERT(errno == 0 || errno == ENOENT);
 }
 
+void callWcpMain(const std::string &a, const std::string &b)
+{
+    int argc = 3;
+    const char *argv[] = {"wcp", a.c_str(), b.c_str(), nullptr};
+    release_assert(wcpMain(argc, (char **) argv) == 0);
+
+    // reset open files limit to default
+    rlimit64 openFilesLimit = {};
+    getrlimit64(RLIMIT_NOFILE, &openFilesLimit);
+    openFilesLimit.rlim_cur = 1024;
+    release_assert(setrlimit64(RLIMIT_NOFILE, &openFilesLimit) == 0);
+}
+
 class TestContainer
 {
 public:
@@ -314,44 +327,33 @@ public:
             TEST_ASSERT(fclose(f) == 0);
         }
 
-        auto call = [](const std::string &a, const std::string &b) {
-            int argc = 3;
-            const char *argv[] = {"wcp", a.c_str(), b.c_str(), nullptr};
-            release_assert(wcpMain(argc, (char **) argv) == 0);
 
-            // reset open files limit to default
-            rlimit64 openFilesLimit = {};
-            getrlimit64(RLIMIT_NOFILE, &openFilesLimit);
-            openFilesLimit.rlim_cur = 1024;
-            release_assert(setrlimit64(RLIMIT_NOFILE, &openFilesLimit) == 0);
-        };
-
-        call(source, dest);
+        callWcpMain(source, dest);
         TEST_ASSERT(access((dest + "/source/content_file").c_str(), F_OK) == 0);
 
         std::filesystem::remove_all(dest);
-        call(source + "/", dest);
+        callWcpMain(source + "/", dest);
         TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
 
         std::filesystem::remove_all(dest);
-        call(source, dest + "/");
+        callWcpMain(source, dest + "/");
         TEST_ASSERT(access((dest + "/source/content_file").c_str(), F_OK) == 0);
 
         std::filesystem::remove_all(dest);
-        call(source + "/", dest + "/");
+        callWcpMain(source + "/", dest + "/");
         TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
 
         std::filesystem::remove_all(dest);
-        call(source + "/.", dest);
+        callWcpMain(source + "/.", dest);
         TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
 
         std::filesystem::remove_all(dest);
-        call(contentFile, dest);
+        callWcpMain(contentFile, dest);
         TEST_ASSERT(access(dest.c_str(), F_OK) == 0);
 
         std::filesystem::remove_all(dest);
         TEST_ASSERT(mkdir(dest.c_str(), S_IRWXU) == 0);
-        call(contentFile, dest);
+        callWcpMain(contentFile, dest);
         TEST_ASSERT(access((dest + "/content_file").c_str(), F_OK) == 0);
     }
 
@@ -384,6 +386,42 @@ public:
         release_assert(stat64(destPath.c_str(), &sb) == 0);
         release_assert(size_t(sb.st_size) <= truncatedSize);
     }
+
+    static void RelativeSingleFileCopy()
+    {
+        std::string base = getProjectBasePath() + "/test_data/TestRelativeSingleFileCopy";
+
+        std::filesystem::remove_all(base);
+        recursiveMkdir(base);
+
+        {
+            FILE *f = fopen((base + "/a").c_str(), "wb");
+            release_assert(f);
+            release_assert(fwrite("asd", 1, 3, f) == 3);
+            release_assert(fclose(f) == 0);
+        }
+
+        std::string workingDirSaved;
+        workingDirSaved.resize(1);
+        while(true)
+        {
+            char* ret = getcwd(workingDirSaved.data(), workingDirSaved.size());
+            if (ret)
+                break;
+
+            release_assert(errno == ERANGE);
+            workingDirSaved.resize(workingDirSaved.size() + 5);
+        }
+        workingDirSaved.resize(strlen(workingDirSaved.data()));
+
+        release_assert(chdir(base.c_str()) == 0);
+
+        callWcpMain("a", "b");
+
+        release_assert(chdir(workingDirSaved.c_str()) == 0);
+
+        assertFilesEqual(base + "/a", base + "/b");
+    }
 };
 
 TEST_LIST =
@@ -392,6 +430,7 @@ TEST_LIST =
     {"ResolveCopyDestination", TestContainer::ResolveCopyDestination},
     {"TruncatedDuringCopy", TestContainer::TruncatedDuringCopy},
     {"FileDescriptorStarvation", TestContainer::FileDescriptorStarvation},
+    {"RelativeSingleFileCopy", TestContainer::RelativeSingleFileCopy},
     {"CopyLargeFolder", TestContainer::CopyLargeFolder},
     {nullptr, nullptr }
 };
