@@ -55,7 +55,8 @@ void CopyRunner::giveBuffer(uint8_t* _buffer)
     // We need to align the buffer because we opened the source file with O_DIRECT.
     // The calling code should make sure that we have enough space to fit this->size bytes in our heap block
     // after alignment, but we do some asserts just to be sure.
-    this->bufferAligned = this->buffer + (this->alignment - this->queue->copyBufferHeap.getAlignment());
+    this->bufferAligned = reinterpret_cast<uint8_t*>((uintptr_t(buffer) - 1u + this->alignment) & -this->alignment);
+
     release_assert(intptr_t(this->bufferAligned) % this->alignment == 0);
     release_assert(this->bufferAligned + this->size <= this->buffer + this->queue->copyBufferHeap.getBlockSize());
 }

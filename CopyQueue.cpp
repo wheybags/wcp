@@ -553,8 +553,7 @@ void CopyQueue::addCopyJob(const std::string& src, const std::string& dest, cons
     // The default heap alignment is pretty high, so we probably won't often need to do this adjustment.
     if (requiredAlignment > this->getHeapAlignment())
     {
-        size_t start = requiredAlignment - this->getHeapAlignment();
-        size_t bytesRemaining = this->getBlockSize() - start;
+        size_t bytesRemaining = this->getBlockSize() - (requiredAlignment - 1);
         size_t alignmentBlocks = bytesRemaining / requiredAlignment;
         chunkSize = alignmentBlocks * requiredAlignment;
     }
