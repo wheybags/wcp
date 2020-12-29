@@ -44,6 +44,13 @@ OpenResult myOpen(const std::string& path, int oflag, mode_t mode, bool showErro
     {
         fd = open(path.c_str(), oflag, mode);
 
+        // Some filesystems don't support O_DIRECT, so we retry without if it fails
+        if (fd < 0 && (oflag & O_DIRECT) && errno == EINVAL)
+        {
+            oflag ^= O_DIRECT;
+            continue;
+        }
+
         if (fd < 0 && errno == EINTR)
             continue;
 
