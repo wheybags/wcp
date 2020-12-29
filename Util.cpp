@@ -36,6 +36,8 @@ void recursiveMkdir(std::string& path)
 
 OpenResult myOpen(const std::string& path, int oflag, mode_t mode, bool showErrorMessages)
 {
+    using namespace std::string_literals;
+
     int fd = -1;
 
     for (int32_t tries = 0; tries < 5; tries++)
@@ -51,7 +53,7 @@ OpenResult myOpen(const std::string& path, int oflag, mode_t mode, bool showErro
     if (fd < 0)
     {
         if (showErrorMessages)
-            return Error("Couldn't open \"" + path + "\": \"" + strerror(errno));
+            return Error("Couldn't open \""s + path + "\": \""s + strerror(errno) + "\""s);
         else
             return Error();
     }
@@ -61,6 +63,8 @@ OpenResult myOpen(const std::string& path, int oflag, mode_t mode, bool showErro
 
 Result myClose(int fd, bool showErrorMessages)
 {
+    using namespace std::string_literals;
+
 #   ifndef __linux__
 #       error "Need to handle EINTR if this is ever ported. See notes here https://www.man7.org/linux/man-pages/man2/close.2.html"
 #   endif
@@ -70,7 +74,7 @@ Result myClose(int fd, bool showErrorMessages)
     if (err < 0)
     {
         if (showErrorMessages)
-            return Error(std::string("Failure on closing file: \"") + strerror(errno) + "\"");
+            return Error("Failure on closing file: \""s + strerror(errno) + "\""s);
         else
             return Error();
     }

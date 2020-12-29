@@ -39,11 +39,13 @@ void CopyQueue::exitProcess()
     // When being used as a single queue for one copy operation, we can just exit immediately when we're done.
     // No need to carefully clean up all our threads and memory allocations, the kernel will clean up for us.
     // Using _exit disables any registered atexit handlers from running.
-    _exit(0); // TODO: some sensible error code
+    _exit(int(this->errored));
 }
 
 void CopyQueue::onError(Error&& error)
 {
+    this->errored = true;
+
     if (this->showingErrors)
     {
         if (this->showingProgress)
@@ -366,6 +368,8 @@ void CopyQueue::start()
     this->state = State::Running;
     this->totalBytesToCopy = 0;
     this->totalBytesCopied = 0;
+    this->totalBytesFailed = 0;
+    this->errored = false;
 
     release_assert(pthread_create(&this->submitThread, nullptr, CopyQueue::staticCallSubmitLoop, this) == 0);
 
@@ -378,7 +382,7 @@ void CopyQueue::start()
     }
 }
 
-void CopyQueue::join(OnCompletionAction onCompletionAction)
+bool CopyQueue::join(OnCompletionAction onCompletionAction)
 {
     debug_assert(this->state == State::Running);
     this->state = State::AdditionComplete;
@@ -399,6 +403,8 @@ void CopyQueue::join(OnCompletionAction onCompletionAction)
         pthread_join(this->showProgressThread, nullptr);
     }
     this->state = State::Idle;
+
+    return !this->errored;
 }
 
 void CopyQueue::addRecursiveCopy(std::string from, std::string dest)

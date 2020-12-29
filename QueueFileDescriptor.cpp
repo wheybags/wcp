@@ -16,14 +16,14 @@ QueueFileDescriptor::QueueFileDescriptor(CopyQueue& queue, std::string path, int
 
 QueueFileDescriptor::~QueueFileDescriptor()
 {
-    debug_assert(fd == CLOSED_VAL || (fd == NEVER_OPENED_VAL && (this->mode & O_RDONLY) == 0 && (this->mode & O_RDWR) == 0));
+    debug_assert(this->fd == CLOSED_VAL || this->fd == NEVER_OPENED_VAL);
 }
 
 Result QueueFileDescriptor::ensureOpened()
 {
-    debug_assert(fd != CLOSED_VAL);
+    debug_assert(this->fd != CLOSED_VAL);
 
-    if (fd == NEVER_OPENED_VAL)
+    if (this->fd == NEVER_OPENED_VAL)
     {
         while(!this->reserveFileDescriptor(OpenPriority::High))
         {

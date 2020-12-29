@@ -89,7 +89,7 @@ int wcpMain(int argc, char** argv)
     CopyQueue::OnCompletionAction completionAction = Config::NO_CLEANUP ? CopyQueue::OnCompletionAction::ExitProcessNoCleanup :
                                                      CopyQueue::OnCompletionAction::Return;
 
-    copyQueue.join(completionAction);
+    bool success = copyQueue.join(completionAction);
 
-    return 0;
+    return int(!success);
 }

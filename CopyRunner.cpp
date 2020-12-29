@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstring>
 
+
 CopyRunner::CopyRunner(CopyQueue* queue,
                        QueueFileDescriptor* sourceFd,
                        QueueFileDescriptor* destFd,
@@ -71,6 +72,34 @@ struct io_uring_sqe* CopyRunner::getSqe()
     return sqe;
 }
 
+void CopyRunner::cleanupOnError()
+{
+    // if an error occurs, just close all files synchronously, and ignore further errors
+    if (*this->chunksRemaining == 1)
+    {
+        if (this->sourceFd->isOpen())
+        {
+            myClose(this->sourceFd->getFd(), false);
+            this->sourceFd->notifyClosed();
+        }
+
+        if (this->destFd->isOpen())
+        {
+            myClose(this->destFd->getFd(), false);
+            this->destFd->notifyClosed();
+        }
+    }
+}
+
+void CopyRunner::saveError(Error&& error)
+{
+    if (!this->savedError)
+    {
+        this->savedError = std::move(error);
+        this->cleanupOnError();
+    }
+}
+
 Result CopyRunner::submitReadWriteCommands()
 {
     {
@@ -87,6 +116,7 @@ Result CopyRunner::submitReadWriteCommands()
         {
             // TODO: account for other fragments of this copy
             this->queue->totalBytesFailed += this->size;
+            this->cleanupOnError();
             return result;
         }
     }
@@ -185,7 +215,13 @@ Result CopyRunner::submitCloseCommands()
     {
         Result result = this->destFd->ensureOpened();
         if (std::holds_alternative<Error>(result))
-            return result;
+        {
+            this->cleanupOnError();
+            if (this->sourceFd->isOpen())
+                this->savedError = std::move(std::get<Error>(result));
+            else
+                return result;
+        }
     }
 
     debug_assert(*this->chunksRemaining == 1 && (this->sourceFd->isOpen() || this->destFd->isOpen()));
@@ -212,8 +248,9 @@ Result CopyRunner::submitCloseCommands()
 Result CopyRunner::addToBatch()
 {
     debug_assert(!this->needsBuffer());
+    debug_assert(!this->savedError);
 
-    if (this->writeOffset < this->offset + this->size && !this->deferredError)
+    if (this->writeOffset < this->offset + this->size)
         return this->submitReadWriteCommands();
     else
         return this->submitCloseCommands();
@@ -228,150 +265,137 @@ bool CopyRunner::needsFileDescriptors() const
 
 CopyRunner::RunnerResult CopyRunner::onCompletionEvent(EventData& eventData, __s32 result)
 {
+    using namespace std::string_literals;
+
     this->jobsRunning--;
     debug_assert(jobsRunning >= 0);
 
-    if (this->jobsRunning == 0 && this->deferredError)
+    if (!this->savedError)
     {
-        if (*this->chunksRemaining > 1 || (!this->destFd->isOpen() && !this->sourceFd->isOpen()))
-            return std::move(*this->deferredError);
-    }
-
-    if (Config::DEBUG_FORCE_PARTIAL_READS &&
-       (eventData.type == EventData::Type::Read || eventData.type == EventData::Type::Write) &&
-       eventData.resultOverride != std::numeric_limits<__s32>::max())
-    {
-        // Don't allow spoofing to drop a real error
-        if (result >= 0)
+        if (Config::DEBUG_FORCE_PARTIAL_READS &&
+            (eventData.type == EventData::Type::Read || eventData.type == EventData::Type::Write) &&
+            eventData.resultOverride != std::numeric_limits<__s32>::max())
         {
-            // only allow spoofing an error, or a shorter-than-real io event, never a longer-than-real one.
-            if (eventData.resultOverride < 0 || eventData.resultOverride <= result)
-                result = eventData.resultOverride;
+            // Don't allow spoofing to drop a real error
+            if (result >= 0)
+            {
+                // only allow spoofing an error, or a shorter-than-real io event, never a longer-than-real one.
+                if (eventData.resultOverride < 0 || eventData.resultOverride <= result)
+                    result = eventData.resultOverride;
+            }
+
+            eventData.resultOverride = std::numeric_limits<__s32>::max();
         }
 
-        eventData.resultOverride = std::numeric_limits<__s32>::max();
-    }
-
-    std::optional<Error> error;
-
-    switch (eventData.type)
-    {
-        case EventData::Type::Read:
+        switch (eventData.type)
         {
-            if (this->deferredError)
-                break;
-
-            if (Config::DEBUG_COPY_OPS)
+            case EventData::Type::Read:
             {
-                printf("RD %d->%d %ld JR:%d RES: %d %s\n",
-                       this->sourceFd->getFd(), this->destFd->getFd(), this->offset, this->jobsRunning, result,
-                       (result < 0 ? strerror(-result) : ""));
-            }
+                if (Config::DEBUG_COPY_OPS)
+                {
+                    printf("RD %d->%d %ld JR:%d RES: %d %s\n",
+                           this->sourceFd->getFd(), this->destFd->getFd(), this->offset, this->jobsRunning, result,
+                           (result < 0 ? strerror(-result) : ""));
+                }
 
-            // result of zero indicates EOF. This will happen if the file is truncated by another process.
-            // If this happens, then we just bail out. Someone else is modifying the file as we read it, so there's not much else we can do.
-            if (result == 0)
-            {
-                if (this->queue->showingErrors)
-                    error = Error("File shrank while copying: \"" + this->sourceFd->getPath() + "\"");
-                else
-                    error = Error();
-            }
-            if (result < 0)
-            {
-                if (this->queue->showingErrors)
-                    error = Error("Error reading file \"" + this->sourceFd->getPath() + "\": \"" + strerror(-result) + "\"");
-                else
-                    error = Error();
-            }
-            else
-            {
-                this->readOffset += result;
-
-                // If we're not at the end of the file, and we read up to a non-aligned offset, then back up until
-                // we're aligned again. This probably won't happen in the real world, but the DEBUG_FORCE_PARTIAL_READS mode
-                // does make it happen, so we handle it. Also it's not guaranteed to never happen for real.
-                unsigned int bytesToRead = this->offset + this->size - this->readOffset;
-                if (bytesToRead)
-                    this->readOffset = (this->readOffset / this->alignment) * this->alignment;
-            }
-
-            break;
-        }
-
-        case EventData::Type::Write:
-        {
-            if (this->deferredError)
-                break;
-
-            if (Config::DEBUG_COPY_OPS)
-            {
-                printf("WT %d->%d %ld JR:%d RES: %d %s\n",
-                       this->sourceFd->getFd(), this->destFd->getFd(), this->size, this->jobsRunning, result,
-                       (result < 0 ? strerror(-result) : ""));
-            }
-
-            if (result < 0)
-            {
-                // ECANCELED means the preceding read failed or didn't fully complete.
-                // This is set up with the IOSQE_IO_LINK flag on the read submission.
-                if (result != -ECANCELED)
+                // result of zero indicates EOF. This will happen if the file is truncated by another process.
+                // If this happens, then we just bail out. Someone else is modifying the file as we read it, so there's not much else we can do.
+                if (result == 0)
                 {
                     if (this->queue->showingErrors)
-                        error = Error("Error writing file \"" + this->destFd->getPath() + "\": \"" + strerror(-result) + "\"");
+                        this->saveError(Error("File shrank while copying: \""s + this->sourceFd->getPath() + "\""s));
                     else
-                        error = Error();
+                        this->saveError(Error());
                 }
-            }
-            else
-            {
-                this->writeOffset += result;
-                this->queue->totalBytesCopied += result;
-            }
-
-            break;
-        }
-
-        case EventData::Type::Close:
-        {
-            QueueFileDescriptor* fd = nullptr;
-            if (&eventData == &this->eventDataBuffers[0])
-                fd = this->sourceFd;
-            else
-                fd = this->destFd;
-
-            // Even when close() returns an error, the file is always closed
-            fd->notifyClosed();
-
-            if (result < 0)
-            {
-                if (this->queue->showingErrors)
-                    error = Error("Error closing file \"" + fd->getPath() + "\": \"" + strerror(-result) + "\"");
+                if (result < 0)
+                {
+                    if (this->queue->showingErrors)
+                        this->saveError(Error("Error reading file \""s + this->sourceFd->getPath() + "\": \""s + strerror(-result) + "\""s));
+                    else
+                        this->saveError(Error());
+                }
                 else
-                    error = Error();
+                {
+                    this->readOffset += result;
+
+                    // If we're not at the end of the file, and we read up to a non-aligned offset, then back up until
+                    // we're aligned again. This probably won't happen in the real world, but the DEBUG_FORCE_PARTIAL_READS mode
+                    // does make it happen, so we handle it. Also it's not guaranteed to never happen for real.
+                    unsigned int bytesToRead = this->offset + this->size - this->readOffset;
+                    if (bytesToRead)
+                        this->readOffset = (this->readOffset / this->alignment) * this->alignment;
+                }
+
+                break;
             }
 
-            break;
+            case EventData::Type::Write:
+            {
+                if (Config::DEBUG_COPY_OPS)
+                {
+                    printf("WT %d->%d %ld JR:%d RES: %d %s\n",
+                           this->sourceFd->getFd(), this->destFd->getFd(), this->size, this->jobsRunning, result,
+                           (result < 0 ? strerror(-result) : ""));
+                }
+
+                if (result < 0)
+                {
+                    // ECANCELED means the preceding read failed or didn't fully complete.
+                    // This is set up with the IOSQE_IO_LINK flag on the read submission.
+                    if (result != -ECANCELED)
+                    {
+                        if (this->queue->showingErrors)
+                            this->saveError(Error("Error writing file \""s + this->destFd->getPath() + "\": \""s + strerror(-result) + "\""s));
+                        else
+                            this->saveError(Error());
+                    }
+                }
+                else
+                {
+                    this->writeOffset += result;
+                    this->queue->totalBytesCopied += result;
+                }
+
+                break;
+            }
+
+            case EventData::Type::Close:
+            {
+                QueueFileDescriptor* fd = nullptr;
+                if (&eventData == &this->eventDataBuffers[0])
+                    fd = this->sourceFd;
+                else
+                    fd = this->destFd;
+
+                // Even when close() returns an error, the file is always closed
+                fd->notifyClosed();
+
+                if (result < 0)
+                {
+                    if (this->queue->showingErrors)
+                        this->saveError(Error("Error closing file \""s + fd->getPath() + "\": \""s + strerror(-result) + "\""s));
+                    else
+                        this->saveError(Error());
+                }
+
+                break;
+            }
         }
     }
 
     debug_assert(this->writeOffset <= this->offset + this->size);
 
-    bool needClose = *this->chunksRemaining == 1 && (this->destFd->isOpen() || this->sourceFd->isOpen());
-
-    if (error)
+    if (this->jobsRunning == 0 && this->savedError)
     {
-        if (this->jobsRunning > 0 || needClose)
-            this->deferredError = std::move(*error);
-        else if (jobsRunning == 0)
-            return std::move(*error);
+        if (*this->chunksRemaining > 1)
+            return std::move(*this->savedError);
     }
 
     if (this->jobsRunning == 0)
     {
-        if (this->deferredError && !needClose)
-            return std::move(*this->deferredError);
-        else if (this->writeOffset == this->offset + this->size && !needClose)
+        bool needClose = *this->chunksRemaining == 1 && (this->destFd->isOpen() || this->sourceFd->isOpen());
+
+        if (this->writeOffset == this->offset + this->size && !needClose)
             return FinishedTag();
         else
             return RescheduleTag();

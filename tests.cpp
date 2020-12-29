@@ -221,7 +221,7 @@ public:
             clearTargetFile(destPath);
 
             queue->addFileCopy(srcFile, destPath);
-            queue->join();
+            release_assert(queue->join());
 
             assertFilesEqual(srcFile, destPath);
         });
@@ -238,7 +238,7 @@ public:
             std::filesystem::remove_all(destPath);
 
             queue->addRecursiveCopy(srcFolder, destPath);
-            queue->join();
+            release_assert(queue->join());
 
             assertFoldersEqual(srcFolder, destPath);
         });
@@ -282,7 +282,7 @@ public:
         std::filesystem::remove_all(destPath);
 
         queue->addRecursiveCopy(srcFolder, destPath);
-        queue->join();
+        release_assert(queue->join());
 
         assertFoldersEqual(srcFolder, destPath);
 
@@ -317,7 +317,7 @@ public:
         auto call = [](const std::string &a, const std::string &b) {
             int argc = 3;
             const char *argv[] = {"wcp", a.c_str(), b.c_str(), nullptr};
-            wcpMain(argc, (char **) argv);
+            release_assert(wcpMain(argc, (char **) argv) == 0);
 
             // reset open files limit to default
             rlimit64 openFilesLimit = {};
@@ -378,7 +378,7 @@ public:
         release_assert(close(srcWriteFd) == 0);
 
         queue->start();
-        queue->join();
+        release_assert(!queue->join());
 
         struct stat64 sb = {};
         release_assert(stat64(destPath.c_str(), &sb) == 0);

@@ -26,7 +26,7 @@ public:
         ExitProcessNoCleanup,
         Return
     };
-    void join(OnCompletionAction onCompletionAction = OnCompletionAction::Return);
+    [[nodiscard]] bool join(OnCompletionAction onCompletionAction = OnCompletionAction::Return);
 
     size_t getBlockSize() const { return this->copyBufferHeap.getBlockSize(); }
     size_t getHeapAlignment() const { return this->copyBufferHeap.getAlignment(); }
@@ -76,6 +76,7 @@ private:
 
     std::vector<std::string> errorMessages;
     pthread_mutex_t errorMessagesMutex = PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP;
+    std::atomic_bool errored = false;
 
     static constexpr uint64_t RESERVED_FD_COUNT = 2; // Reserved one for the ring itself, and one for directory iteration
     static constexpr uint64_t RESERVED_HIGH_PRIORITY_FD_COUNT = 2; // The real submit thread takes priority, and it needs at least 2 FDs to make progress

@@ -53,6 +53,8 @@ public:
 
 private:
     struct io_uring_sqe* getSqe();
+    void cleanupOnError();
+    void saveError(Error&& error);
 
     Result submitReadWriteCommands();
     Result submitCloseCommands();
@@ -62,7 +64,7 @@ public:
 
 private:
     friend class TestContainer;
-    std::optional<Error> deferredError;
+    std::optional<Error> savedError;
 
     CopyQueue* queue;
     QueueFileDescriptor* sourceFd;

@@ -21,4 +21,4 @@ static constexpr nullptr_t Success() { return nullptr; }
 
 using OpenResult = std::variant<Error, int>;
 OpenResult myOpen(const std::string& path, int oflag, mode_t mode, bool showErrorMessages);
-[[nodiscard]] Result myClose(int fd, bool showErrorMessages);
+Result myClose(int fd, bool showErrorMessages);
