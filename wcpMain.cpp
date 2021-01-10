@@ -25,24 +25,11 @@ int wcpMain(int argc, char** argv)
     std::filesystem::path dest = argv[2];
     release_assert(!src.empty() && !dest.empty());
 
-    // Linux has stupidly low default limits for concurrently open files (1024 file descriptors).
-    // This is due to a bad api (select) that uses a bitset to represent a set of file descriptors.
-    // We just bump it up as far as we're allowed.
-    size_t fileDescriptorCap = 512;
-    {
-        rlimit64 openFilesLimit = {};
-        getrlimit64(RLIMIT_NOFILE, &openFilesLimit);
-        openFilesLimit.rlim_cur = openFilesLimit.rlim_max;
-
-        // Try to leave a reasonable amount for other purposes (it will be a lot anyway, ~1mil on my machine)
-        if (setrlimit64(RLIMIT_NOFILE, &openFilesLimit) == 0 && openFilesLimit.rlim_cur > 2048)
-            fileDescriptorCap = openFilesLimit.rlim_cur - 1024;
-    }
-
     size_t oneGig = 1024 * 1024 * 1024;
     size_t ramQuota = std::max(getPhysicalRamSize() / 10, oneGig);
     size_t blockSize = 256 * 1024 * 1024; // 256M
     size_t ringSize = ramQuota / blockSize;
+    size_t fileDescriptorCap = 900;
     CopyQueue copyQueue(ringSize, fileDescriptorCap, Heap(ramQuota / blockSize, blockSize));
     copyQueue.start();
 
