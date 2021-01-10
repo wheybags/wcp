@@ -259,6 +259,14 @@ void CopyQueue::showProgressLoop()
         return str + pad;
     };
 
+    auto centreAlign = [](const std::string& str, int32_t lineWidth)
+    {
+        std::string pad;
+        for (uint32_t i = 0; i < (lineWidth / 2) - (str.length() / 2); i++)
+            pad += " ";
+        return pad + str;
+    };
+
     bool firstShow = true;
     auto showProgress = [&]()
     {
@@ -297,25 +305,24 @@ void CopyQueue::showProgressLoop()
             if (haveTotal)
                 status += leftPad(humanFriendlyFileSize(this->totalBytesToCopy), sectionLength);
             else
-                status += leftPad("???", sectionLength);
+                status += "???";
 
-            // Centre align
-            std::string statusLine;
-            for (uint32_t i = 0; i < (winsize.ws_col / 2) - (status.length() / 2); i++)
-                statusLine += " ";
-            statusLine += status;
-
-            showLine(statusLine);
+            showLine(centreAlign(status, winsize.ws_col));
         }
 
-        // progress bar
+
+        if (!haveTotal)
         {
-            float ratio = (haveTotal && this->totalBytesToCopy > 0) ? float(this->totalBytesCopied) / float(this->totalBytesToCopy) : 0;
+            showLine(centreAlign("Found so far: " + humanFriendlyFileSize(this->totalBytesToCopy), winsize.ws_col));
+        }
+        else  // progress bar
+        {
+            float ratio = this->totalBytesToCopy > 0 ? float(this->totalBytesCopied) / float(this->totalBytesToCopy) : 0;
             int percentDone = int(ratio * 100.0f);
 
             int32_t width = winsize.ws_col - 6;
 
-            std::string percentString = haveTotal ? std::to_string(percentDone) : "???";
+            std::string percentString = std::to_string(percentDone);
             std::string progressBarLine = leftPad(percentString, 3) + "% ";
 
             int doneChars = int(ratio * width);
