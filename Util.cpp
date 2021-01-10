@@ -34,7 +34,7 @@ void recursiveMkdir(std::string& path)
     mkdirOne(path.c_str());
 }
 
-OpenResult myOpen(const std::string& path, int oflag, mode_t mode, bool showErrorMessages)
+OpenResult myOpen(const std::string& path, int oflag, mode_t mode)
 {
     using namespace std::string_literals;
 
@@ -58,17 +58,12 @@ OpenResult myOpen(const std::string& path, int oflag, mode_t mode, bool showErro
     }
 
     if (fd < 0)
-    {
-        if (showErrorMessages)
-            return Error("Couldn't open \""s + path + "\": \""s + strerror(errno) + "\""s);
-        else
-            return Error();
-    }
+        return Error("Couldn't open \""s + path + "\": \""s + strerror(errno) + "\""s);
 
     return fd;
 }
 
-Result myClose(int fd, bool showErrorMessages)
+Result myClose(int fd)
 {
     using namespace std::string_literals;
 
@@ -79,12 +74,7 @@ Result myClose(int fd, bool showErrorMessages)
     int err = close(fd);
 
     if (err < 0)
-    {
-        if (showErrorMessages)
-            return Error("Failure on closing file: \""s + strerror(errno) + "\""s);
-        else
-            return Error();
-    }
+        return Error("Failure on closing file: \""s + strerror(errno) + "\""s);
 
     return Success();
 }

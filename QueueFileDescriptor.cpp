@@ -11,7 +11,7 @@ QueueFileDescriptor::QueueFileDescriptor(CopyQueue& queue, std::string path, int
     , queue(queue)
 {
     if (this->reserveFileDescriptor(OpenPriority::Low))
-        this->doOpen(false); // ignore errors here, it will be seen when the user calls ensureOpened()
+        this->doOpen(); // ignore errors here, it will be seen when the user calls ensureOpened()
 }
 
 QueueFileDescriptor::~QueueFileDescriptor()
@@ -31,7 +31,7 @@ Result QueueFileDescriptor::ensureOpened()
                 pthread_yield();
         }
 
-        return this->doOpen(this->queue.showingErrors);
+        return this->doOpen();
     }
 
     return Success();
@@ -62,11 +62,11 @@ bool QueueFileDescriptor::reserveFileDescriptor(OpenPriority priority)
     return true;
 }
 
-Result QueueFileDescriptor::doOpen(bool showErrorMessages)
+Result QueueFileDescriptor::doOpen()
 {
-    OpenResult result = myOpen(this->path, this->oflag, this->mode, showErrorMessages);
+    OpenResult result = myOpen(this->path, this->oflag, this->mode);
     if (std::holds_alternative<Error>(result))
-        return Error(std::move(std::get<Error>(result)));
+        return std::move(std::get<Error>(result));
 
     this->fd = std::get<int>(result);
     return Success();

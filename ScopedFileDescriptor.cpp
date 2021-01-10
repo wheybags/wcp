@@ -7,9 +7,9 @@ ScopedFileDescriptor::~ScopedFileDescriptor()
     debug_assert(close(this->fd) == 0);
 }
 
-Result ScopedFileDescriptor::open(const std::string& path, int oflag, mode_t mode, bool showErrorMessages)
+Result ScopedFileDescriptor::open(const std::string& path, int oflag, mode_t mode)
 {
-    OpenResult result = myOpen(path, oflag, mode, showErrorMessages);
+    OpenResult result = myOpen(path, oflag, mode);
     if (std::holds_alternative<Error>(result))
         return Error(std::move(std::get<Error>(result)));
 

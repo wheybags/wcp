@@ -58,7 +58,7 @@ void CopyQueue::onError(Error&& error)
         }
         else
         {
-            fputs(error.humanFriendlyErrorMessage->c_str(), stderr);
+            fprintf(stderr, "%s\n", error.humanFriendlyErrorMessage->c_str());
         }
     }
 }
@@ -440,7 +440,7 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
 
         ScopedFileDescriptor currentFd;
         {
-            Result result = currentFd.open(current, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0, this->showingErrors);
+            Result result = currentFd.open(current, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
             if (std::holds_alternative<Error>(result))
                 continue;
         }

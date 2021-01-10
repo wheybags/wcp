@@ -28,7 +28,7 @@ public:
 private:
     enum class OpenPriority { Low, High };
     bool reserveFileDescriptor(OpenPriority priority);
-    Result doOpen(bool showErrorMessages);
+    Result doOpen();
 
 private:
     std::string path;

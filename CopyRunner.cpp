@@ -80,13 +80,13 @@ void CopyRunner::cleanupOnError()
     {
         if (this->sourceFd->isOpen())
         {
-            myClose(this->sourceFd->getFd(), false);
+            myClose(this->sourceFd->getFd());
             this->sourceFd->notifyClosed();
         }
 
         if (this->destFd->isOpen())
         {
-            myClose(this->destFd->getFd(), false);
+            myClose(this->destFd->getFd());
             this->destFd->notifyClosed();
         }
     }
@@ -303,17 +303,11 @@ CopyRunner::RunnerResult CopyRunner::onCompletionEvent(EventData& eventData, __s
                 // If this happens, then we just bail out. Someone else is modifying the file as we read it, so there's not much else we can do.
                 if (result == 0)
                 {
-                    if (this->queue->showingErrors)
-                        this->saveError(Error("File shrank while copying: \""s + this->sourceFd->getPath() + "\""s));
-                    else
-                        this->saveError(Error());
+                    this->saveError(Error("File shrank while copying: \""s + this->sourceFd->getPath() + "\""s));
                 }
                 if (result < 0)
                 {
-                    if (this->queue->showingErrors)
-                        this->saveError(Error("Error reading file \""s + this->sourceFd->getPath() + "\": \""s + strerror(-result) + "\""s));
-                    else
-                        this->saveError(Error());
+                    this->saveError(Error("Error reading file \""s + this->sourceFd->getPath() + "\": \""s + strerror(-result) + "\""s));
                 }
                 else
                 {
@@ -344,12 +338,7 @@ CopyRunner::RunnerResult CopyRunner::onCompletionEvent(EventData& eventData, __s
                     // ECANCELED means the preceding read failed or didn't fully complete.
                     // This is set up with the IOSQE_IO_LINK flag on the read submission.
                     if (result != -ECANCELED)
-                    {
-                        if (this->queue->showingErrors)
-                            this->saveError(Error("Error writing file \""s + this->destFd->getPath() + "\": \""s + strerror(-result) + "\""s));
-                        else
-                            this->saveError(Error());
-                    }
+                        this->saveError(Error("Error writing file \""s + this->destFd->getPath() + "\": \""s + strerror(-result) + "\""s));
                 }
                 else
                 {
@@ -372,12 +361,7 @@ CopyRunner::RunnerResult CopyRunner::onCompletionEvent(EventData& eventData, __s
                 fd->notifyClosed();
 
                 if (result < 0)
-                {
-                    if (this->queue->showingErrors)
-                        this->saveError(Error("Error closing file \""s + fd->getPath() + "\": \""s + strerror(-result) + "\""s));
-                    else
-                        this->saveError(Error());
-                }
+                    this->saveError(Error("Error closing file \""s + fd->getPath() + "\": \""s + strerror(-result) + "\""s));
 
                 break;
             }

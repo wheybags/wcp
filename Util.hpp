@@ -20,5 +20,5 @@ using Result = std::variant<Error, nullptr_t>;
 static constexpr nullptr_t Success() { return nullptr; }
 
 using OpenResult = std::variant<Error, int>;
-OpenResult myOpen(const std::string& path, int oflag, mode_t mode, bool showErrorMessages);
-Result myClose(int fd, bool showErrorMessages);
+OpenResult myOpen(const std::string& path, int oflag, mode_t mode);
+Result myClose(int fd);
