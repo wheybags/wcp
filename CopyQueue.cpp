@@ -210,7 +210,7 @@ void CopyQueue::submitLoop()
             if (Config::DEBUG_COPY_OPS)
                 puts("COMPLETION THREAD EXIT");
 
-            if (completionAction == OnCompletionAction::ExitProcessNoCleanup)
+            if (completionAction == OnCompletionAction::ExitProcessNoCleanup && !this->showingProgress)
                 this->exitProcess();
 
             if (nextBuffer)
@@ -290,10 +290,15 @@ void CopyQueue::showProgressLoop()
     bool firstShow = true;
     auto showProgress = [&]()
     {
-        winsize winsize = {};
-        ioctl(STDOUT_FILENO, TIOCGWINSZ, &winsize);
+        int32_t termWidth = 100;
+        if (!Config::PROGRESS_DEBUG_SIMPLE)
+        {
+            winsize winsize = {};
+            ioctl(STDOUT_FILENO, TIOCGWINSZ, &winsize);
+            termWidth = winsize.ws_col;
+        }
 
-        if (!firstShow && !Config::VALGRIND_MODE) // don't overwrite valgrind output
+        if (!firstShow && !Config::VALGRIND_MODE && !Config::PROGRESS_DEBUG_SIMPLE) // don't overwrite valgrind output
         {
             // return to start of line, and move three lines up (ie, move cursor to the top left of our draw area)
             fputs("\r\033[2A", stderr);
@@ -301,7 +306,7 @@ void CopyQueue::showProgressLoop()
 
         auto showLine = [&](const std::string& line)
         {
-            fputs((rightPad(line, winsize.ws_col) + "\n").c_str(), stderr);
+            fputs((rightPad(line, termWidth) + "\n").c_str(), stderr);
         };
 
         std::vector<std::string> localErrorMessages;
@@ -327,20 +332,20 @@ void CopyQueue::showProgressLoop()
             else
                 status += "???";
 
-            showLine(centreAlign(status, winsize.ws_col));
+            showLine(centreAlign(status, termWidth));
         }
 
 
         if (!haveTotal)
         {
-            showLine(centreAlign("Found so far: " + humanFriendlyFileSize(this->totalBytesToCopy), winsize.ws_col));
+            showLine(centreAlign("Found so far: " + humanFriendlyFileSize(this->totalBytesToCopy), termWidth));
         }
         else  // progress bar
         {
             float ratio = this->totalBytesToCopy > 0 ? float(this->totalBytesCopied) / float(this->totalBytesToCopy) : 0;
             int percentDone = int(ratio * 100.0f);
 
-            int32_t width = winsize.ws_col - 6;
+            int32_t width = termWidth - 6;
 
             std::string percentString = std::to_string(percentDone);
             std::string progressBarLine = leftPad(percentString, 3) + "% ";
@@ -387,21 +392,19 @@ void CopyQueue::showProgressLoop()
     }
 
     showProgress();
+    if (completionAction == OnCompletionAction::ExitProcessNoCleanup)
+        this->exitProcess();
 }
 
 void CopyQueue::start()
 {
     release_assert(this->state == State::Idle);
     this->state = State::Running;
-    this->totalBytesToCopy = 0;
-    this->totalBytesCopied = 0;
-    this->totalBytesFailed = 0;
-    this->errored = false;
 
     release_assert(pthread_create(&this->submitThread, nullptr, CopyQueue::staticCallSubmitLoop, this) == 0);
 
     // Don't try to show a progress bar if we're not outputting to a terminal
-    this->showingProgress = isatty(STDERR_FILENO) && getenv("TERM");
+    this->showingProgress = Config::PROGRESS_DEBUG_SIMPLE || (isatty(STDERR_FILENO) && getenv("TERM"));
     if (this->showingProgress)
     {
         pthread_mutex_lock(&this->progressEndMutex);
@@ -416,10 +419,6 @@ bool CopyQueue::join(OnCompletionAction onCompletionAction)
     this->completionAction = onCompletionAction;
 
     pthread_join(this->submitThread, nullptr);
-    // submitThread will probably terminate the process for us before we get here.
-    // Check here too just in case, as there is a race on setting this->completionAction.
-    if (this->completionAction == OnCompletionAction::ExitProcessNoCleanup)
-        this->exitProcess();
 
     debug_assert(this->submissionsRunning == 0);
     debug_assert(this->copyBufferHeap.getFreeBlocksCount() == this->copyBufferHeap.getBlockCount());
@@ -430,6 +429,10 @@ bool CopyQueue::join(OnCompletionAction onCompletionAction)
         pthread_join(this->showProgressThread, nullptr);
     }
     this->state = State::Idle;
+    this->totalBytesToCopy = 0;
+    this->totalBytesCopied = 0;
+    this->totalBytesFailed = 0;
+    this->errored = false;
 
     return !this->errored;
 }

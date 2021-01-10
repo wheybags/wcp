@@ -7,5 +7,6 @@ namespace Config
     extern bool DEBUG_FORCE_PARTIAL_WRITES;
     extern bool NO_CLEANUP;
     static constexpr bool VALGRIND_MODE = false;
+    static constexpr bool PROGRESS_DEBUG_SIMPLE = false;
 }
 
