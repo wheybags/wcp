@@ -4,3 +4,7 @@ perf_data
 build*
 cmake-build*
 .idea
+perf_regression_test2.sh
+bench2.sh
+perf.csv
+*.ods

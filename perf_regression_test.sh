@@ -2,13 +2,51 @@
 
 set -euo pipefail
 
+bad_arg="false"
+csv_mode="false"
+
 base_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+default_bench_script="$base_dir/bench.sh"
+bench_script="$default_bench_script"
+
+while [[ $# -gt 0 ]]; do
+    arg="$1"
+
+    case "$arg" in
+        --csv)
+          csv_mode="true"
+          shift
+        ;;
+
+        --bench-script)
+          shift
+          bench_script="$1"
+          shift
+        ;;
+
+        *)
+            bad_arg="true"
+            echo "Unrecognised option: $1" >&2
+            echo >&2
+            break
+        ;;
+    esac
+done
+
+if [ "$bad_arg" == "true" ]; then
+    echo "Usage $0 [OPTION]..." >&2
+    echo "Options:" >&2
+    echo "  --csv                 Output only the new results in csv format with the git commit message and hash" >&2
+    echo "  --bench-script PATH   Path to the benchmark script. Default $default_bench_script" >&2
+    exit 1
+fi
+
 old_perf_file="$base_dir/perf_data/latest"
 
 run_bench() {
-  echo "running 1K test">&2; "$base_dir/bench.sh" --time-only --iterations 7 1K 200000
-  echo "running 1M test">&2; "$base_dir/bench.sh" --time-only --iterations 7 1M 7000
-  echo "running 512M test">&2; "$base_dir/bench.sh" --time-only --iterations 7 512M 20
+  echo "running 1K test">&2; "$bench_script" --time-only --iterations 7 1K 200000
+  echo "running 1M test">&2; "$bench_script" --time-only --iterations 7 1M 7000
+  echo "running 512M test">&2; "$bench_script" --time-only --iterations 7 512M 20
 }
 
 new_perf_file="$(mktemp)"
@@ -28,6 +66,13 @@ run_bench > "$new_perf_file"
   IFS= read -r new_1M
   IFS= read -r new_512M
 } <"$new_perf_file"
+
+if [ "$csv_mode" == "true" ]; then
+  msg=$(git log --format=%s -n 1 | sed 's/,/_/g')
+  hash=$(git rev-parse --short HEAD)
+  echo "$msg,$hash,$new_1K,$new_1M,$new_512M"
+  exit 0
+fi
 
 if [ -f "$old_perf_file" ]; then
   {
