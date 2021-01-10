@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 #include <cstring>
 #include <unistd.h>
+#include <dirent.h>
 
 void recursiveMkdir(std::string& path)
 {
@@ -51,7 +52,7 @@ OpenResult myOpen(const std::string& path, int oflag, mode_t mode)
             continue;
         }
 
-        if (fd < 0 && errno == EINTR)
+        if (fd < 0 && (errno == EINTR || errno == EAGAIN))
             continue;
 
         break;
@@ -77,4 +78,31 @@ Result myClose(int fd)
         return Error("Failure on closing file: \""s + strerror(errno) + "\""s);
 
     return Success();
+}
+
+Result myStatx(int fd, const std::string& path, int flags, unsigned int mask, struct statx& buf)
+{
+    int err = retrySyscall([&]()
+    {
+        statx(fd, path.c_str(), flags, mask, &buf);
+    });
+
+    if (err != 0)
+        return Error("Failed to stat \"" + path + "\": \"" + strerror(err) + "\"");
+
+    return Success();
+}
+
+GetDentsResult myGetDents(int dfd, const std::string& path, void* buffer, size_t bufferSize)
+{
+    ssize_t retval = 0;
+    int err = retrySyscall([&]()
+    {
+        retval = getdents64(dfd, buffer, bufferSize);
+    });
+
+    if (err != 0)
+        return Error("Couldn't open directory \"" + path + "\": \"" + strerror(err) + "\"");
+
+    return size_t(retval);
 }

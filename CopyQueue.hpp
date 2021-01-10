@@ -18,7 +18,7 @@ public:
     ~CopyQueue();
 
     void addRecursiveCopy(std::string from, std::string dest);
-    void addFileCopy(const std::string& from, const std::string& dest, const struct stat64* fromStatBuffer = nullptr);
+    void addFileCopy(const std::string& from, const std::string& dest, const struct statx* fromStatBuffer = nullptr);
     void start();
 
     enum class OnCompletionAction : uint8_t
@@ -37,7 +37,7 @@ private:
     friend class CopyRunner;
     friend class QueueFileDescriptor;
 
-    void addCopyJob(const std::string& src, const std::string& dest, const struct stat64& st);
+    void addCopyJob(const std::string& src, const std::string& dest, const struct statx& st);
     void addCopyJobPart(QueueFileDescriptor* sourceFd,
                         QueueFileDescriptor* destFd,
                         off_t offset,

@@ -46,14 +46,30 @@ int wcpMain(int argc, char** argv)
     CopyQueue copyQueue(ringSize, fileDescriptorCap, Heap(ramQuota / blockSize, blockSize));
     copyQueue.start();
 
-    struct stat64 srcStat = {};
-    release_assert(stat64(src.c_str(), &srcStat) == 0);
+    struct statx srcStat = {};
+    {
+        Result result = myStatx(AT_FDCWD, src, 0, STATX_BASIC_STATS, srcStat);
+        if (std::holds_alternative<Error>(result))
+        {
+            fprintf(stderr, "%s\n", std::get<Error>(result).humanFriendlyErrorMessage->c_str());
+            return 1;
+        }
+    }
 
-    struct stat64 destStat = {};
-    errno = 0;
-    stat64(dest.c_str(), &destStat);
-    int destStatResult = errno;
-    release_assert(destStatResult == 0 || destStatResult == ENOENT);
+    struct statx destStat = {};
+    int destStatResult = 0;
+    {
+        destStatResult = retrySyscall([&]()
+        {
+            statx(AT_FDCWD, dest.c_str(), 0, STATX_BASIC_STATS, &destStat);
+        });
+
+        if (destStatResult != 0 && destStatResult != ENOENT)
+        {
+            fprintf(stderr, "Failed to stat \"%s\": \"%s\"\n", dest.c_str(), strerror(destStatResult));
+            return 1;
+        }
+    }
 
     {
         std::filesystem::path destRealParent = std::filesystem::absolute(dest);
@@ -64,19 +80,19 @@ int wcpMain(int argc, char** argv)
         release_assert(access(destRealParent.c_str(), F_OK) == 0);
     }
 
-    if (S_ISDIR(srcStat.st_mode))
+    if (S_ISDIR(srcStat.stx_mode))
     {
         dest /= src.filename();
         recursiveMkdir(dest.string());
 
         if (destStatResult == 0)
-            release_assert(S_ISDIR(destStat.st_mode));
+            release_assert(S_ISDIR(destStat.stx_mode));
 
         copyQueue.addRecursiveCopy(src, dest);
     }
-    else if (S_ISREG(srcStat.st_mode))
+    else if (S_ISREG(srcStat.stx_mode))
     {
-        if (destStatResult == 0 && S_ISDIR(destStat.st_mode))
+        if (destStatResult == 0 && S_ISDIR(destStat.stx_mode))
             dest /= src.filename();
 
         copyQueue.addFileCopy(src, dest, &srcStat);

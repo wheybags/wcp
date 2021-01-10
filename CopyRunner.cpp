@@ -76,20 +76,7 @@ struct io_uring_sqe* CopyRunner::getSqe()
 void CopyRunner::cleanupOnError()
 {
     // if an error occurs, just close all files synchronously, and ignore further errors
-    if (*this->chunksRemaining == 1)
-    {
-        if (this->sourceFd->isOpen())
-        {
-            myClose(this->sourceFd->getFd());
-            this->sourceFd->notifyClosed();
-        }
-
-        if (this->destFd->isOpen())
-        {
-            myClose(this->destFd->getFd());
-            this->destFd->notifyClosed();
-        }
-    }
+    this->handleFileClose();
 }
 
 void CopyRunner::saveError(Error&& error)
@@ -104,7 +91,7 @@ void CopyRunner::saveError(Error&& error)
 Result CopyRunner::submitReadWriteCommands()
 {
     {
-        Result result;
+        Result result = Success();
 
         for (auto& fd : {this->sourceFd, this->destFd})
         {
@@ -209,54 +196,41 @@ Result CopyRunner::submitReadWriteCommands()
     return Success();
 }
 
-Result CopyRunner::submitCloseCommands()
-{
-    // need to ensure dest file is opened to handle the case of an empty file
-    if (!this->destFd->hasBeenClosed())
-    {
-        Result result = this->destFd->ensureOpened();
-        if (std::holds_alternative<Error>(result))
-        {
-            this->cleanupOnError();
-            if (this->sourceFd->isOpen())
-                this->savedError = std::move(std::get<Error>(result));
-            else
-                return result;
-        }
-    }
-
-    debug_assert(*this->chunksRemaining == 1 && (this->sourceFd->isOpen() || this->destFd->isOpen()));
-
-    if (this->sourceFd->isOpen())
-    {
-        io_uring_sqe* sqe = this->getSqe();
-        io_uring_prep_close(sqe, this->sourceFd->getFd());
-        sqe->user_data = reinterpret_cast<__u64>(&this->eventDataBuffers[0]);
-        this->eventDataBuffers[0].type = EventData::Type::Close;
-    }
-
-    if (this->destFd->isOpen())
-    {
-        io_uring_sqe* sqe = this->getSqe();
-        io_uring_prep_close(sqe, this->destFd->getFd());
-        sqe->user_data = reinterpret_cast<__u64>(&this->eventDataBuffers[1]);
-        this->eventDataBuffers[1].type = EventData::Type::Close;
-    }
-
-    return Success();
-}
-
 Result CopyRunner::addToBatch()
 {
     debug_assert(!this->needsBuffer());
     debug_assert(!this->savedError);
+    debug_assert(this->writeOffset < this->offset + this->size);
 
-    if (this->writeOffset < this->offset + this->size)
-        return this->submitReadWriteCommands();
-    else
-        return this->submitCloseCommands();
+    return this->submitReadWriteCommands();
 
     debug_assert(this->jobsRunning <= MAX_JOBS_PER_RUNNER);
+}
+
+Result CopyRunner::handleFileClose()
+{
+    Result result = Success();
+
+    if (*this->chunksRemaining == 1)
+    {
+        if (this->sourceFd->isOpen())
+        {
+            Result tmp = myClose(this->sourceFd->getFd());
+            if (!std::holds_alternative<Error>(result))
+                result = std::move(tmp);
+            this->sourceFd->notifyClosed();
+        }
+
+        if (this->destFd->isOpen())
+        {
+            Result tmp = myClose(this->destFd->getFd());
+            if (!std::holds_alternative<Error>(result))
+                result = std::move(tmp);
+            this->destFd->notifyClosed();
+        }
+    }
+
+    return result;
 }
 
 bool CopyRunner::needsFileDescriptors() const
@@ -348,39 +322,16 @@ CopyRunner::RunnerResult CopyRunner::onCompletionEvent(EventData& eventData, __s
 
                 break;
             }
-
-            case EventData::Type::Close:
-            {
-                QueueFileDescriptor* fd = nullptr;
-                if (&eventData == &this->eventDataBuffers[0])
-                    fd = this->sourceFd;
-                else
-                    fd = this->destFd;
-
-                // Even when close() returns an error, the file is always closed
-                fd->notifyClosed();
-
-                if (result < 0)
-                    this->saveError(Error("Error closing file \""s + fd->getPath() + "\": \""s + strerror(-result) + "\""s));
-
-                break;
-            }
         }
     }
 
     debug_assert(this->writeOffset <= this->offset + this->size);
 
-    if (this->jobsRunning == 0 && this->savedError)
-    {
-        if (*this->chunksRemaining > 1)
-            return std::move(*this->savedError);
-    }
-
     if (this->jobsRunning == 0)
     {
-        bool needClose = *this->chunksRemaining == 1 && (this->destFd->isOpen() || this->sourceFd->isOpen());
-
-        if (this->writeOffset == this->offset + this->size && !needClose)
+        if (this->savedError)
+            return std::move(*this->savedError);
+        else if (this->writeOffset == this->offset + this->size)
             return FinishedTag();
         else
             return RescheduleTag();

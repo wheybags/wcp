@@ -128,17 +128,34 @@ void CopyQueue::submitLoop()
 
             if (toAdd)
             {
-                Result result = toAdd->addToBatch();
-
-                if (std::holds_alternative<Error>(result))
+                if (toAdd->size == 0)
                 {
+                    // In this case, there's no actual copying to be done, just open and close the dest file
+
+                    Result result = toAdd->destFd->ensureOpened();
+                    if (!std::holds_alternative<Error>(result))
+                        result = toAdd->handleFileClose();
+
+                    if (std::holds_alternative<Error>(result))
+                        this->onError(std::move(std::get<Error>(result)));
+
                     delete toAdd;
-                    this->onError(std::move(std::get<Error>(result)));
+                    doneAdding = false;
                 }
                 else
                 {
-                    doneAdding = false;
-                    runnersAdded++;
+                    Result result = toAdd->addToBatch();
+
+                    if (std::holds_alternative<Error>(result))
+                    {
+                        delete toAdd;
+                        this->onError(std::move(std::get<Error>(result)));
+                    }
+                    else
+                    {
+                        doneAdding = false;
+                        runnersAdded++;
+                    }
                 }
             }
         }
@@ -169,6 +186,9 @@ void CopyQueue::submitLoop()
             CopyRunner::RunnerResult runnerResult = eventData->copyData->onCompletionEvent(*eventData, cqe->res);
             if (std::holds_alternative<CopyRunner::FinishedTag>(runnerResult))
             {
+                Result closeResult = eventData->copyData->handleFileClose();
+                if (std::holds_alternative<Error>(closeResult))
+                    this->onError(std::move(std::get<Error>(closeResult)));
                 delete eventData->copyData;
             }
             else if (std::holds_alternative<Error>(runnerResult))
@@ -422,15 +442,7 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
     if (dest.back() != '/')
         dest += '/';
 
-    // Taken from the manpage for getdents64() https://man7.org/linux/man-pages/man2/getdents64.2.html
-    struct linux_dirent64
-    {
-        ino64_t             d_ino;    /* 64-bit inode number */
-        off64_t             d_off;    /* 64-bit offset to next structure */
-        unsigned short      d_reclen; /* Size of this dirent */
-        unsigned char       d_type;   /* File type */
-        __extension__ char  d_name[]; /* Filename (null-terminated). __extension__ allows use of flexible array members in g++ (normally only allowed in plain C) */
-    };
+
 
     recursiveMkdir(dest);
 
@@ -449,17 +461,28 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
         {
             Result result = currentFd.open(current, O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
             if (std::holds_alternative<Error>(result))
+            {
+                this->onError(std::move(std::get<Error>(result)));
                 continue;
+            }
         }
 
-        ssize_t ret = 0;
+        ssize_t written = 0;
         do
         {
-            ret = getdents64(currentFd.getFd(), dirBuffer.data(), dirBuffer.size());
-            release_assert(ret >= 0);
+            {
+                GetDentsResult result = myGetDents(currentFd.getFd(), current, dirBuffer.data(), dirBuffer.size());
+                if (std::holds_alternative<Error>(result))
+                {
+                    this->onError(std::move(std::get<Error>(result)));
+                    continue;
+                }
+
+                written = std::get<size_t>(result);
+            }
 
             uint8_t* nextPtr = dirBuffer.data();
-            while (nextPtr < dirBuffer.data() + ret)
+            while (nextPtr < dirBuffer.data() + written)
             {
                 linux_dirent64* currentEntry = reinterpret_cast<linux_dirent64*>(nextPtr);
                 nextPtr += currentEntry->d_reclen;
@@ -468,25 +491,32 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
 
                 unsigned char type = currentEntry->d_type;
 
-                struct stat64 sb = {};
+                struct statx sb = {};
                 bool didStat = false;
 
                 if (currentEntry->d_type == DT_UNKNOWN)
                 {
-                    release_assert(stat64(fullPath.c_str(), &sb) == 0);
-                    didStat = true;
+                    {
+                        Result result = myStatx(AT_FDCWD, fullPath, 0, STATX_BASIC_STATS, sb);
+                        if (std::holds_alternative<Error>(result))
+                        {
+                            this->onError(std::move(std::get<Error>(result)));
+                            continue;
+                        }
+                        didStat = true;
+                    }
 
-                    if (S_ISFIFO(sb.st_mode))
+                    if (S_ISFIFO(sb.stx_mode))
                         type = DT_FIFO;
-                    else if (S_ISCHR(sb.st_mode))
+                    else if (S_ISCHR(sb.stx_mode))
                         type = DT_CHR;
-                    else if (S_ISDIR(sb.st_mode))
+                    else if (S_ISDIR(sb.stx_mode))
                         type = DT_DIR;
-                    else if (S_ISREG(sb.st_mode))
+                    else if (S_ISREG(sb.stx_mode))
                         type = DT_REG;
-                    else if (S_ISLNK(sb.st_mode))
+                    else if (S_ISLNK(sb.stx_mode))
                         type = DT_LNK;
-                    else if (S_ISSOCK(sb.st_mode))
+                    else if (S_ISSOCK(sb.stx_mode))
                         type = DT_SOCK;
                 }
 
@@ -505,7 +535,12 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
                 {
                     if (!didStat)
                     {
-                        release_assert(stat64(fullPath.c_str(), &sb) == 0);
+                        Result result = myStatx(AT_FDCWD, fullPath, 0, STATX_BASIC_STATS, sb);
+                        if (std::holds_alternative<Error>(result))
+                        {
+                            this->onError(std::move(std::get<Error>(result)));
+                            continue;
+                        }
                         didStat = true;
                     }
 
@@ -517,29 +552,34 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
                 }
             }
 
-        } while (ret != 0);
+        } while (written != 0);
     }
 }
 
-void CopyQueue::addFileCopy(const std::string& from, const std::string& dest, const struct stat64* fromStatBuffer)
+void CopyQueue::addFileCopy(const std::string& from, const std::string& dest, const struct statx* fromStatBuffer)
 {
-    std::unique_ptr<struct stat64> tmp;
+    std::unique_ptr<struct statx> tmp;
     if (!fromStatBuffer)
     {
-        tmp = std::make_unique<struct stat64>();
-        release_assert(stat64(from.c_str(), tmp.get()) == 0);
+        tmp = std::make_unique<struct statx>();
         fromStatBuffer = tmp.get();
+        Result result = myStatx(AT_FDCWD, from, 0, STATX_BASIC_STATS, *tmp);
+        if (std::holds_alternative<Error>(result))
+        {
+            this->onError(std::move(std::get<Error>(result)));
+            return;
+        }
     }
 
     this->addCopyJob(from, dest, *fromStatBuffer);
 }
 
-void CopyQueue::addCopyJob(const std::string& src, const std::string& dest, const struct stat64& st)
+void CopyQueue::addCopyJob(const std::string& src, const std::string& dest, const struct statx& st)
 {
     auto* sourceFd = new QueueFileDescriptor(*this, src, O_RDONLY | O_DIRECT | O_CLOEXEC);
-    auto* destFd = new QueueFileDescriptor(*this, dest, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, st.st_mode);
+    auto* destFd = new QueueFileDescriptor(*this, dest, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, st.stx_mode);
 
-    if (st.st_size == 0)
+    if (st.stx_size == 0)
     {
         this->addCopyJobPart(sourceFd, destFd, 0, 0, 0, new int32_t(1));
         return;
@@ -553,7 +593,7 @@ void CopyQueue::addCopyJob(const std::string& src, const std::string& dest, cons
     // an ioctl to fetch it, but first we need to know which device to use. And then we could run into edge cases with crossing
     // filesystem boundaries, so we'd need to account for that. We just use the fs blocksize because it's handily available
     // via stat() on the file, not the block device.
-    size_t requiredAlignment = st.st_blksize;
+    size_t requiredAlignment = st.stx_blksize;
 
     size_t chunkSize = this->getBlockSize();
 
@@ -567,17 +607,17 @@ void CopyQueue::addCopyJob(const std::string& src, const std::string& dest, cons
 
     release_assert(chunkSize > 0);
 
-    int32_t chunkCount = st.st_size / chunkSize;
-    if (st.st_size % chunkSize != 0)
+    int32_t chunkCount = st.stx_size / chunkSize;
+    if (st.stx_size % chunkSize != 0)
         chunkCount++;
 
     int32_t* chunksDoneTracker = new int32_t(chunkCount);
 
     int32_t i = 0;
-    off_t offset = 0;
-    while (offset != st.st_size)
+    size_t offset = 0;
+    while (offset != st.stx_size)
     {
-        off_t count = std::min(off_t(chunkSize), st.st_size - offset);
+        size_t count = std::min<size_t>(chunkSize, st.stx_size - offset);
 
         this->addCopyJobPart(sourceFd, destFd, offset, count, requiredAlignment, chunksDoneTracker);
         offset += count;

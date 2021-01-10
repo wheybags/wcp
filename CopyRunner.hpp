@@ -17,7 +17,6 @@ public:
         {
             Read,
             Write,
-            Close
         };
 
         CopyRunner* copyData;
@@ -44,6 +43,7 @@ public:
     void giveBuffer(uint8_t* buffer);
 
     [[nodiscard]] Result addToBatch();
+    Result handleFileClose();
 
     class ContinueTag {};
     class RescheduleTag {};
@@ -57,13 +57,14 @@ private:
     void saveError(Error&& error);
 
     Result submitReadWriteCommands();
-    Result submitCloseCommands();
 
 public:
     static constexpr int32_t MAX_JOBS_PER_RUNNER = 2;
 
 private:
     friend class TestContainer;
+    friend class CopyQueue;
+
     std::optional<Error> savedError;
 
     CopyQueue* queue;
