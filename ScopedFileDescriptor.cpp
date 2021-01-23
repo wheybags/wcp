@@ -4,7 +4,8 @@
 
 ScopedFileDescriptor::~ScopedFileDescriptor()
 {
-    debug_assert(close(this->fd) == 0);
+    [[maybe_unused]] int ret = close(this->fd);
+    debug_assert(ret == 0);
 }
 
 Result ScopedFileDescriptor::open(const std::string& path, int oflag, mode_t mode)

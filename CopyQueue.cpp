@@ -26,7 +26,8 @@ CopyQueue::CopyQueue(size_t requestedRingSize, size_t fileDescriptorCap, Heap&& 
 CopyQueue::~CopyQueue()
 {
     io_uring_queue_exit(&this->ring);
-    debug_assert(pthread_mutex_destroy(&this->copiesPendingStartMutex) == 0);
+    [[maybe_unused]] int ret = pthread_mutex_destroy(&this->copiesPendingStartMutex);
+    debug_assert(ret == 0);
 }
 
 bool CopyQueue::isDone()
