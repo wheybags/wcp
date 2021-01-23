@@ -85,8 +85,9 @@ void CopyQueue::submitLoop()
 
             size_t waitingForStart = this->copiesPendingStartCount + copiesPendingContinue.size();
             bool rateLimited = (this->ringSize - this->submissionsRunning) < CopyRunner::MAX_JOBS_PER_RUNNER;
+            bool waitForDirectoryIteration = this->state == State::Running && this->totalBytesCopied >= (this->totalBytesToCopy / 8);
 
-            if (waitingForStart == 0 || rateLimited)
+            if (waitingForStart == 0 || rateLimited || waitForDirectoryIteration)
                 break;
 
             if (!nextBuffer)
