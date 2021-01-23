@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -euo pipefail
+trap 'echo error!' ERR
 
 base_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 
@@ -50,8 +51,20 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ "$#" -ne 2 ] || [ "$bad_arg" == "true" ]; then
-    echo "Usage $0 [OPTION]... [FILE_SIZE] [FILE_COUNT]" >&2
+if [ "$#" -eq 1 ]; then
+  TEST_DATA=$1
+  GENERATE="false"
+elif [ "$#" -eq 2 ]; then
+  FILE_SIZE=$1
+  FILE_COUNT=$2
+  TEST_DATA="$base_dir/test_data/$FILE_SIZE""_$FILE_COUNT"
+  GENERATE="true"
+else
+  bad_arg="true";
+fi
+
+if [ "$bad_arg" == "true" ]; then
+    echo "Usage $0 [OPTION]... ([FILE_SIZE] [FILE_COUNT] | [SOURCE_FOLDER])" >&2
     echo "Options:" >&2
     echo "  -w|--only-wcp         Don't run other programs for comparison" >&2
     echo "  --show-wcp-progress   Show the wcp progress bar. Hidden by default." >&2
@@ -60,10 +73,6 @@ if [ "$#" -ne 2 ] || [ "$bad_arg" == "true" ]; then
     exit 1
 fi
 
-FILE_SIZE=$1
-FILE_COUNT=$2
-
-TEST_DATA="$base_dir/test_data/$FILE_SIZE""_$FILE_COUNT"
 TEST_DEST="$base_dir/test_dest"
 
 message() {
@@ -142,7 +151,7 @@ run_test() {
     fi
 }
 
-if [ ! -e "$TEST_DATA/done_tag" ]; then
+if [ "$GENERATE" == "true" ] && [ ! -e "$TEST_DATA/done_tag" ]; then
     message "Generating test data..."
     rm -rf "$TEST_DATA"
     generate_data "$TEST_DATA" "$FILE_SIZE" "$FILE_COUNT"
