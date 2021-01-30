@@ -96,6 +96,14 @@ private:
 
     bool showingProgress = false;
     bool showingErrors = true;
+
+    struct EtaCalculation
+    {
+        double estimationMadeAtSeconds;
+        double currentSpeedBytesPerSecond;
+        double estimationInSeconds;
+    };
+    std::vector<EtaCalculation> etaCalculations;
 };
 
 

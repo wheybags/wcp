@@ -351,6 +351,10 @@ void CopyQueue::showProgressLoop()
 
         bool haveTotal = int(this->state.load()) >= int(State::AdditionComplete);
 
+        // read once so our calculations are consistent with eachother
+        size_t toCopy = this->totalBytesToCopy;
+        size_t copied = this->totalBytesCopied;
+
         // show top status line
         {
             std::string statusLine;
@@ -361,11 +365,11 @@ void CopyQueue::showProgressLoop()
 
             statusLine += " Elapsed: " + humanFriendlyTime(secondsSinceStart);
 
-            double bytesPerSecond = double(this->totalBytesCopied) / secondsSinceStart;
+            double bytesPerSecond = double(copied) / secondsSinceStart;
 
-            std::string centre = leftPad("", humanFriendlyFileSize(this->totalBytesCopied), 10) + " / ";
+            std::string centre = leftPad("", humanFriendlyFileSize(copied), 10) + " / ";
             if (haveTotal)
-                centre += humanFriendlyFileSize(this->totalBytesToCopy);
+                centre += humanFriendlyFileSize(toCopy);
             else
                 centre += "???";
 
@@ -374,8 +378,11 @@ void CopyQueue::showProgressLoop()
             std::string right = leftPad("", humanFriendlyFileSize(bytesPerSecond), 10) + "/s   ETA: ";
             if (haveTotal)
             {
-                double eta = double(this->totalBytesToCopy - this->totalBytesCopied) / bytesPerSecond;
+                double eta = double(toCopy - copied) / bytesPerSecond;
                 right += "~" + humanFriendlyTime(eta);
+
+                if (Config::TEST_ETA_CALCULATION)
+                    this->etaCalculations.emplace_back(EtaCalculation{secondsSinceStart, bytesPerSecond, eta});
             }
             else
             {
@@ -392,11 +399,11 @@ void CopyQueue::showProgressLoop()
 
         if (!haveTotal)
         {
-            showLine(centreAlign("", "Calculating, found: " + humanFriendlyFileSize(this->totalBytesToCopy), termWidth));
+            showLine(centreAlign("", "Calculating, found: " + humanFriendlyFileSize(toCopy), termWidth));
         }
         else  // progress bar
         {
-            float ratio = this->totalBytesToCopy > 0 ? float(this->totalBytesCopied) / float(this->totalBytesToCopy) : 0;
+            float ratio = toCopy > 0 ? float(copied) / float(toCopy) : 0;
             int percentDone = int(ratio * 100.0f);
 
             int32_t width = termWidth - 6;
@@ -445,7 +452,40 @@ void CopyQueue::showProgressLoop()
         }
     }
 
-    showProgress();
+    if (Config::TEST_ETA_CALCULATION)
+    {
+        double secondsSinceStart = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::high_resolution_clock::now() - started).count();
+        secondsSinceStart /= 1000.0;
+
+        std::stringstream csvStream;
+        csvStream << "estimate made at,speed MiB/s,estimate,estimate error\n";
+        double avgError = 0;
+        for (const auto& estimation : this->etaCalculations)
+        {
+            double thisError = std::abs((estimation.estimationMadeAtSeconds + estimation.estimationInSeconds) - secondsSinceStart);
+            csvStream << std::to_string(estimation.estimationMadeAtSeconds) << ","
+                      << std::to_string(estimation.currentSpeedBytesPerSecond / double(1024 * 1024)) << ","
+                      << std::to_string(estimation.estimationInSeconds) << ","
+                      << std::to_string(thisError) << "\n";
+
+            avgError += thisError;
+        }
+        avgError /= double(this->etaCalculations.size());
+
+        printf("ETA calculation average error: %f\n", avgError);
+
+        std::string csv = csvStream.str();
+        FILE* f = fopen("eta_calc_error.csv", "wb");
+        release_assert(f);
+        release_assert(fwrite(csv.data(), 1, csv.size(), f) == csv.size());
+        release_assert(fclose(f) == 0);
+    }
+    else
+    {
+        showProgress();
+    }
+
     if (completionAction == OnCompletionAction::ExitProcessNoCleanup)
         this->exitProcess();
 }

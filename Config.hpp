@@ -8,5 +8,6 @@ namespace Config
     extern bool NO_CLEANUP;
     static constexpr bool VALGRIND_MODE = false;
     static constexpr bool PROGRESS_DEBUG_SIMPLE = false;
+    static constexpr bool TEST_ETA_CALCULATION = false;
 }
 
