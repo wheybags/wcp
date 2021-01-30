@@ -265,29 +265,33 @@ void CopyQueue::showProgressLoop()
         return str + " " + unit;
     };
 
-    auto leftPad = [](const std::string& str, int32_t targetLength)
+    auto leftPad = [](const std::string& left, const std::string& str, int32_t targetLength)
     {
-        std::string pad;
-        for (int32_t i = 0; i < targetLength - int32_t(str.length()); i++)
+        std::string pad(left);
+        for (int32_t i = int32_t(pad.size()); i < targetLength - int32_t(str.length()); i++)
             pad += " ";
         return pad + str;
     };
 
-    auto rightPad = [](const std::string& str, int32_t targetLength)
+    auto rightPad = [](const std::string& left, const std::string& str, int32_t targetLength)
     {
-        std::string pad;
-        for (int32_t i = 0; i < targetLength - int32_t(str.length()); i++)
+        std::string pad(left);
+        for (int32_t i = int32_t(pad.size()); i < targetLength - int32_t(str.length()); i++)
             pad += " ";
         return str + pad;
     };
 
-    auto centreAlign = [](const std::string& str, int32_t lineWidth)
+    auto centreAlign = [](const std::string& left, const std::string& centre, int32_t lineWidth)
     {
-        std::string pad;
-        for (uint32_t i = 0; i < (lineWidth / 2) - (str.length() / 2); i++)
-            pad += " ";
-        return pad + str;
+        std::string str(left);
+        for (uint32_t i = str.length(); i < (lineWidth / 2) - (centre.length() / 2); i++)
+            str += " ";
+        str += centre;
+
+        return str;
     };
+
+    std::chrono::high_resolution_clock::time_point started = std::chrono::high_resolution_clock::now();
 
     bool firstShow = true;
     auto showProgress = [&]()
@@ -308,7 +312,7 @@ void CopyQueue::showProgressLoop()
 
         auto showLine = [&](const std::string& line)
         {
-            fputs((rightPad(line, termWidth) + "\n").c_str(), stderr);
+            fputs((rightPad("", line, termWidth) + "\n").c_str(), stderr);
         };
 
         std::vector<std::string> localErrorMessages;
@@ -324,23 +328,50 @@ void CopyQueue::showProgressLoop()
 
         bool haveTotal = int(this->state.load()) >= int(State::AdditionComplete);
 
-        // show raw amount copied
+        // show top status line
         {
-            int32_t sectionLength = 10;
+            std::string statusLine;
 
-            std::string status = leftPad(humanFriendlyFileSize(this->totalBytesCopied), sectionLength) + " / ";
+            double secondsSinceStart = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::high_resolution_clock::now() - started).count();
+            secondsSinceStart /= 1000.0;
+
+            statusLine += " Elapsed: " + std::to_string(int(secondsSinceStart)) + "s";
+
+            double mibCopied = double(this->totalBytesCopied) / double(1024 * 1024);
+            double mibTotal = double(this->totalBytesToCopy) / double(1024 * 1024);
+            double mibPerSecond = mibCopied / secondsSinceStart;
+
+            std::string centre = leftPad("", humanFriendlyFileSize(this->totalBytesCopied), 10) + " / ";
             if (haveTotal)
-                status += leftPad(humanFriendlyFileSize(this->totalBytesToCopy), sectionLength);
+                centre += humanFriendlyFileSize(this->totalBytesToCopy);
             else
-                status += "???";
+                centre += "???";
 
-            showLine(centreAlign(status, termWidth));
+            statusLine = centreAlign(statusLine, centre, termWidth);
+
+            std::string right = leftPad("", std::to_string(int(mibPerSecond)), 3) + " MiB/s   ETA: ";
+            if (haveTotal)
+            {
+                double eta = (mibTotal - mibCopied) / mibPerSecond;
+                right += "~" + std::to_string(int(eta)) + "s";
+            }
+            else
+            {
+                right += "???";
+            }
+
+            right += " ";
+
+            statusLine = leftPad(statusLine, right, termWidth);
+
+            showLine(statusLine);
         }
 
 
         if (!haveTotal)
         {
-            showLine(centreAlign("Found so far: " + humanFriendlyFileSize(this->totalBytesToCopy), termWidth));
+            showLine(centreAlign("", "Found so far: " + humanFriendlyFileSize(this->totalBytesToCopy), termWidth));
         }
         else  // progress bar
         {
@@ -350,7 +381,7 @@ void CopyQueue::showProgressLoop()
             int32_t width = termWidth - 6;
 
             std::string percentString = std::to_string(percentDone);
-            std::string progressBarLine = leftPad(percentString, 3) + "% ";
+            std::string progressBarLine = leftPad("", percentString, 3) + "% ";
 
             int doneChars = int(ratio * width);
             for (int32_t i = 0; i < width; i++)
