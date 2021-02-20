@@ -526,9 +526,11 @@ bool CopyQueue::join(OnCompletionAction onCompletionAction)
     this->totalBytesToCopy = 0;
     this->totalBytesCopied = 0;
     this->totalBytesFailed = 0;
+
+    bool retval = !this->errored;
     this->errored = false;
 
-    return !this->errored;
+    return retval;
 }
 
 void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
