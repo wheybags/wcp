@@ -191,6 +191,14 @@ void CopyQueue::submitLoop()
                 Result closeResult = eventData->copyData->handleFileClose();
                 if (std::holds_alternative<Error>(closeResult))
                     this->onError(std::move(std::get<Error>(closeResult)));
+
+                bool big = eventData->copyData->size > BIG_FILE_SIZE;
+                this->bigSmallBuff.addToBuff(big);
+                if (big)
+                    this->bigs--;
+                else
+                    this->smalls--;
+
                 delete eventData->copyData;
             }
             else if (std::holds_alternative<Error>(runnerResult))
@@ -316,6 +324,25 @@ void CopyQueue::showProgressLoop()
 
     std::chrono::high_resolution_clock::time_point started = std::chrono::high_resolution_clock::now();
 
+    const float updateIntervalSeconds = 0.25f;
+    const float updatesPerSecond = 1.0f / updateIntervalSeconds;
+
+
+    struct SpeedMeasurementStart
+    {
+        std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
+        size_t size = 0;
+    };
+
+    std::deque<SpeedMeasurementStart> startQueue;
+    startQueue.push_back(SpeedMeasurementStart { std::chrono::high_resolution_clock::now(), 0 });
+
+    //SpeedMeasurementStart measurementStarts[2];
+    //int32_t currentMeasurement = 0;
+
+    struct Avg { double val = 0; size_t cnt = 0; };
+    Avg avgs[9] = {};
+
     bool firstShow = true;
     auto showProgress = [&]()
     {
@@ -365,7 +392,29 @@ void CopyQueue::showProgressLoop()
 
             statusLine += " Elapsed: " + humanFriendlyTime(secondsSinceStart);
 
-            double bytesPerSecond = double(copied) / secondsSinceStart;
+            // Record big/small status in a circular buffer bitset in an atomic int64
+            // Record current throughput at each completion
+            // calc ratio of big/small + use as bucket lookup
+
+
+
+            double bytesPerSecond;// = double(copied) / secondsSinceStart;
+            {
+                //SpeedMeasurementStart& currentStart = measurementStarts[currentMeasurement];
+                SpeedMeasurementStart& currentStart = startQueue.front();
+
+
+                double secondsSinceStartX = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::high_resolution_clock::now() - currentStart.start).count();
+                secondsSinceStartX /= 1000.0;
+
+                bytesPerSecond = double(copied - currentStart.size) / secondsSinceStartX;
+
+                startQueue.push_back(SpeedMeasurementStart { std::chrono::high_resolution_clock::now(), copied });
+
+                if (secondsSinceStartX > 45.0)
+                    startQueue.pop_front();
+            }
 
             std::string centre = leftPad("", humanFriendlyFileSize(copied), 10) + " / ";
             if (haveTotal)
@@ -376,13 +425,72 @@ void CopyQueue::showProgressLoop()
             statusLine = centreAlign(statusLine, centre, termWidth);
 
             std::string right = leftPad("", humanFriendlyFileSize(bytesPerSecond), 10) + "/s   ETA: ";
-            if (haveTotal)
-            {
-                double eta = double(toCopy - copied) / bytesPerSecond;
-                right += "~" + humanFriendlyTime(eta);
 
-                if (Config::TEST_ETA_CALCULATION)
-                    this->etaCalculations.emplace_back(EtaCalculation{secondsSinceStart, bytesPerSecond, eta});
+            auto val = bigSmallBuff.read();
+
+            if (haveTotal && val.getCount() >= 8)
+            {
+                int32_t idx = val.getBitsOnCount();
+                debug_assert(idx <= 8);
+
+                if (avgs[idx].cnt == 0)
+                {
+                    avgs[idx].val = bytesPerSecond;
+                }
+                else
+                {
+                    double alpha = 1.0 / 100.0;
+                    avgs[idx].val = (1 - alpha) * avgs[idx].val + alpha * bytesPerSecond;
+                }
+                avgs[idx].cnt++;
+
+                double a = double(this->bigs) / double (this->bigs + this->smalls);
+                a = std::clamp(a, 0., 1.);
+                a = a*8;
+                int32_t remainIdx = std::round(a);
+
+                double calcBps = -1;
+                const size_t sampleThreshold = 20;
+
+                if (avgs[int(std::floor(a))].cnt > sampleThreshold &&
+                    avgs[int(std::ceil(a))].cnt > sampleThreshold)
+                {
+                    double alpha = a - std::floor(a);
+                    calcBps = avgs[int(std::floor(a))].val * alpha + avgs[int(std::ceil(a))].val * (1.0 - alpha);
+                }
+                else
+                {
+                    int32_t xx = -1;
+
+                    int32_t diff = 999;
+                    for (int32_t i = 0; i < 9; i++)
+                    {
+                        int32_t thisDiff = std::abs(remainIdx - i);
+                        if (thisDiff < diff && avgs[i].cnt > sampleThreshold)
+                        {
+                            diff = thisDiff;
+                            xx = i;
+                        }
+                    }
+
+                    if (xx != -1)
+                        calcBps = avgs[xx].val;
+                }
+
+
+                if (calcBps != -1)
+                {
+
+                    double eta = double(toCopy - copied) / calcBps;
+                    right += "~" + humanFriendlyTime(eta);
+
+                    if (Config::TEST_ETA_CALCULATION)
+                        this->etaCalculations.emplace_back(EtaCalculation{secondsSinceStart, bytesPerSecond, eta});
+                }
+                else
+                {
+                    right += "???";
+                }
             }
             else
             {
@@ -423,7 +531,6 @@ void CopyQueue::showProgressLoop()
 
     fputs("\n", stderr);
 
-    const float updateIntervalSeconds = 0.25f;
 
     while (!this->isDone())
     {
@@ -736,6 +843,11 @@ void CopyQueue::addCopyJobPart(QueueFileDescriptor* sourceFd,
     debug_assert(this->state == State::Running || this->state == State::Idle);
 
     this->totalBytesToCopy += size;
+
+    if (size > BIG_FILE_SIZE)
+        this->bigs++;
+    else
+        this->smalls++;
 
     pthread_mutex_lock(&this->copiesPendingStartMutex);
     {

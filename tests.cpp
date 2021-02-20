@@ -422,6 +422,54 @@ public:
 
         assertFilesEqual(base + "/a", base + "/b");
     }
+
+    static void UseRollingBitset()
+    {
+        {
+            RollingBitset bitset;
+            auto val = bitset.read();
+            release_assert(val.getCount() == 0);
+            release_assert(val.getSet() == 0);
+            release_assert(val.getBitsOnCount() == 0);
+        }
+
+        {
+            RollingBitset bitset;
+            bitset.addToBuff(true);
+            auto val = bitset.read();
+            release_assert(val.getCount() == 1);
+            release_assert(val.getSet() == 1);
+            release_assert(val.getBitsOnCount() == 1);
+        }
+
+        {
+            RollingBitset bitset;
+            bitset.addToBuff(true);
+            bitset.addToBuff(false);
+            bitset.addToBuff(true);
+            bitset.addToBuff(false);
+            bitset.addToBuff(true);
+            bitset.addToBuff(false);
+            bitset.addToBuff(true);
+            bitset.addToBuff(false);
+
+            auto val = bitset.read();
+            release_assert(val.getCount() == 8);
+            release_assert(val.getSet() == 0b10101010);
+            release_assert(val.getBitsOnCount() == 4);
+        }
+
+        {
+            RollingBitset bitset;
+            for (int i = 0; i < 64; i++)
+                bitset.addToBuff(true);
+
+            auto val = bitset.read();
+            release_assert(val.getCount() == 8*7);
+            release_assert(val.getSet() == 0x00FFFFFFFFFFFFFF);
+            release_assert(val.getBitsOnCount() == 8*7);
+        }
+    }
 };
 
 TEST_LIST =
@@ -432,5 +480,6 @@ TEST_LIST =
     {"FileDescriptorStarvation", TestContainer::FileDescriptorStarvation},
     {"RelativeSingleFileCopy", TestContainer::RelativeSingleFileCopy},
     {"CopyLargeFolder", TestContainer::CopyLargeFolder},
+    {"RollingBitset", TestContainer::UseRollingBitset},
     {nullptr, nullptr }
 };

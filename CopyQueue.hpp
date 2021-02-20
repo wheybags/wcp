@@ -74,6 +74,12 @@ private:
     std::atomic<size_t> totalBytesCopied = 0;
     std::atomic<size_t> totalBytesFailed = 0;
 
+    static constexpr size_t BIG_FILE_SIZE = 1024 * 5;
+    std::atomic<size_t> bigs = 0;
+    std::atomic<size_t> smalls = 0;
+
+    RollingBitset bigSmallBuff;
+
     std::vector<std::string> errorMessages;
     pthread_mutex_t errorMessagesMutex = PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP;
     std::atomic_bool errored = false;
