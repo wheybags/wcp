@@ -8,6 +8,7 @@
 #include <filesystem>
 #include "QueueFileDescriptor.hpp"
 #include "Heap.hpp"
+#include "RollingBitset.hpp"
 
 class CopyRunner;
 
@@ -75,8 +76,8 @@ private:
     std::atomic<size_t> totalBytesFailed = 0;
 
     static constexpr size_t BIG_FILE_SIZE = 1024 * 5;
-    std::atomic<size_t> bigs = 0;
-    std::atomic<size_t> smalls = 0;
+    std::atomic<size_t> bigCopiesRemaining = 0;
+    std::atomic<size_t> smallCopiesRemaining = 0;
 
     RollingBitset bigSmallBuff;
 

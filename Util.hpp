@@ -3,7 +3,6 @@
 #include <memory>
 #include <variant>
 #include <functional>
-#include <atomic>
 
 struct statx;
 
@@ -57,51 +56,3 @@ using GetDentsResult = std::variant<Error, size_t>;
 [[nodiscard]] GetDentsResult myGetDents(int dfd, const std::string& path, void* buffer, size_t bufferSize);
 
 [[nodiscard]] Result myStatx(int fd, const std::string& path, int flags, unsigned int mask, struct statx& buf);
-
-struct RollingBitset
-{
-    std::atomic_uint64_t bigSmallBuffer = 0;
-
-    struct ReadProxy
-    {
-        uint64_t val;
-        explicit ReadProxy(uint64_t val) : val(val) {}
-
-        uint64_t getCount() const { return (val & 0xFF00000000000000ULL) >> (8*7); }
-        uint64_t getSet() const { return val & 0xFF;}//0x00FFFFFFFFFFFFFFULL; }
-        int32_t getBitsOnCount() const
-        {
-            int32_t count = 0;
-            uint64_t tmp = getSet();
-            while (tmp)
-            {
-                count += tmp & 1;
-                tmp >>= 1;
-            }
-
-            return count;
-        }
-    };
-
-    ReadProxy read() const { return ReadProxy(bigSmallBuffer.load()); }
-
-    void addToBuff(bool big)
-    {
-        while (true)
-        {
-            uint64_t oldVal = bigSmallBuffer.load();
-
-            uint64_t countPart = ((oldVal & 0xFF00000000000000ULL) >> (8 * 7)) + 1;
-            if (countPart > 8 * 7)
-                countPart = 8 * 7;
-            countPart <<= 8 * 7;
-
-            uint64_t newVal = (oldVal << 1) | uint64_t(big);
-            newVal = newVal & 0x00FFFFFFFFFFFFFFULL;
-            newVal |= countPart;
-
-            if (bigSmallBuffer.compare_exchange_strong(oldVal, newVal))
-                break;
-        }
-    }
-};

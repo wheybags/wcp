@@ -195,9 +195,9 @@ void CopyQueue::submitLoop()
                 bool big = eventData->copyData->size > BIG_FILE_SIZE;
                 this->bigSmallBuff.addToBuff(big);
                 if (big)
-                    this->bigs--;
+                    this->bigCopiesRemaining--;
                 else
-                    this->smalls--;
+                    this->smallCopiesRemaining--;
 
                 delete eventData->copyData;
             }
@@ -325,23 +325,18 @@ void CopyQueue::showProgressLoop()
     std::chrono::high_resolution_clock::time_point started = std::chrono::high_resolution_clock::now();
 
     const float updateIntervalSeconds = 0.25f;
-    const float updatesPerSecond = 1.0f / updateIntervalSeconds;
 
+    using Clock = std::chrono::high_resolution_clock;
+    struct SpeedMeasurementStartPoint { Clock::time_point start; size_t size; };
 
-    struct SpeedMeasurementStart
-    {
-        std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
-        size_t size = 0;
-    };
+    std::deque<SpeedMeasurementStartPoint> startQueue;
+    startQueue.push_back(SpeedMeasurementStartPoint { Clock::now(), 0 });
 
-    std::deque<SpeedMeasurementStart> startQueue;
-    startQueue.push_back(SpeedMeasurementStart { std::chrono::high_resolution_clock::now(), 0 });
+    constexpr uint32_t bitsetMask = 0xFF;
+    constexpr int32_t bucketCount = 8 + 1;
 
-    //SpeedMeasurementStart measurementStarts[2];
-    //int32_t currentMeasurement = 0;
-
-    struct Avg { double val = 0; size_t cnt = 0; };
-    Avg avgs[9] = {};
+    struct CopySpeedBucket { double bytesPerSecond = 0; size_t sampleCount = 0; };
+    CopySpeedBucket copySpeedBuckets[bucketCount] = {};
 
     bool firstShow = true;
     auto showProgress = [&]()
@@ -401,7 +396,7 @@ void CopyQueue::showProgressLoop()
             double bytesPerSecond;// = double(copied) / secondsSinceStart;
             {
                 //SpeedMeasurementStart& currentStart = measurementStarts[currentMeasurement];
-                SpeedMeasurementStart& currentStart = startQueue.front();
+                SpeedMeasurementStartPoint& currentStart = startQueue.front();
 
 
                 double secondsSinceStartX = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -410,7 +405,7 @@ void CopyQueue::showProgressLoop()
 
                 bytesPerSecond = double(copied - currentStart.size) / secondsSinceStartX;
 
-                startQueue.push_back(SpeedMeasurementStart { std::chrono::high_resolution_clock::now(), copied });
+                startQueue.push_back(SpeedMeasurementStartPoint {std::chrono::high_resolution_clock::now(), copied });
 
                 if (secondsSinceStartX > 45.0)
                     startQueue.pop_front();
@@ -430,58 +425,66 @@ void CopyQueue::showProgressLoop()
 
             if (haveTotal && val.getCount() >= 8)
             {
-                int32_t idx = val.getBitsOnCount();
-                debug_assert(idx <= 8);
-
-                if (avgs[idx].cnt == 0)
                 {
-                    avgs[idx].val = bytesPerSecond;
-                }
-                else
-                {
-                    double alpha = 1.0 / 100.0;
-                    avgs[idx].val = (1 - alpha) * avgs[idx].val + alpha * bytesPerSecond;
-                }
-                avgs[idx].cnt++;
+                    int32_t idx = val.getBitsOnCount(bitsetMask);
+                    debug_assert(idx <= 8);
 
-                double a = double(this->bigs) / double (this->bigs + this->smalls);
-                a = std::clamp(a, 0., 1.);
-                a = a*8;
-                int32_t remainIdx = std::round(a);
-
-                double calcBps = -1;
-                const size_t sampleThreshold = 20;
-
-                if (avgs[int(std::floor(a))].cnt > sampleThreshold &&
-                    avgs[int(std::ceil(a))].cnt > sampleThreshold)
-                {
-                    double alpha = a - std::floor(a);
-                    calcBps = avgs[int(std::floor(a))].val * alpha + avgs[int(std::ceil(a))].val * (1.0 - alpha);
-                }
-                else
-                {
-                    int32_t xx = -1;
-
-                    int32_t diff = 999;
-                    for (int32_t i = 0; i < 9; i++)
+                    if (copySpeedBuckets[idx].sampleCount == 0)
                     {
-                        int32_t thisDiff = std::abs(remainIdx - i);
-                        if (thisDiff < diff && avgs[i].cnt > sampleThreshold)
-                        {
-                            diff = thisDiff;
-                            xx = i;
-                        }
+                        copySpeedBuckets[idx].bytesPerSecond = bytesPerSecond;
                     }
-
-                    if (xx != -1)
-                        calcBps = avgs[xx].val;
+                    else
+                    {
+                        double alpha = 1.0 / 100.0;
+                        copySpeedBuckets[idx].bytesPerSecond = (1 - alpha) * copySpeedBuckets[idx].bytesPerSecond +
+                                                               alpha * bytesPerSecond;
+                    }
+                    copySpeedBuckets[idx].sampleCount++;
                 }
 
 
-                if (calcBps != -1)
+                double etaBytesPerSec = -1;
                 {
+                    const size_t sampleCountThreshold = 20;
 
-                    double eta = double(toCopy - copied) / calcBps;
+                    double a = double(this->bigCopiesRemaining) / double(this->bigCopiesRemaining + this->smallCopiesRemaining);
+                    a = std::clamp(a, 0., 1.);
+                    a = a * (bucketCount-1);
+
+
+                    if (copySpeedBuckets[int(std::floor(a))].sampleCount > sampleCountThreshold &&
+                        copySpeedBuckets[int(std::ceil(a))].sampleCount > sampleCountThreshold)
+                    {
+                        double alpha = a - std::floor(a);
+                        etaBytesPerSec = copySpeedBuckets[int(std::floor(a))].bytesPerSecond * alpha +
+                                         copySpeedBuckets[int(std::ceil(a))].bytesPerSecond * (1.0 - alpha);
+                    }
+                    else
+                    {
+                        int32_t idealIndex = std::round(a);
+
+                        int32_t bestIndex = -1;
+                        int32_t bestDiff = std::numeric_limits<int32_t>::max();
+
+                        for (int32_t i = 0; i < bucketCount; i++)
+                        {
+                            int32_t thisDiff = std::abs(idealIndex - i);
+                            if (thisDiff < bestDiff && copySpeedBuckets[i].sampleCount > sampleCountThreshold)
+                            {
+                                bestDiff = thisDiff;
+                                bestIndex = i;
+                            }
+                        }
+
+                        if (bestIndex != -1)
+                            etaBytesPerSec = copySpeedBuckets[bestIndex].bytesPerSecond;
+                    }
+                }
+
+
+                if (etaBytesPerSec != -1)
+                {
+                    double eta = double(toCopy - copied) / etaBytesPerSec;
                     right += "~" + humanFriendlyTime(eta);
 
                     if (Config::TEST_ETA_CALCULATION)
@@ -845,9 +848,9 @@ void CopyQueue::addCopyJobPart(QueueFileDescriptor* sourceFd,
     this->totalBytesToCopy += size;
 
     if (size > BIG_FILE_SIZE)
-        this->bigs++;
+        this->bigCopiesRemaining++;
     else
-        this->smalls++;
+        this->smallCopiesRemaining++;
 
     pthread_mutex_lock(&this->copiesPendingStartMutex);
     {
