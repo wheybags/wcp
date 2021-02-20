@@ -192,13 +192,7 @@ void CopyQueue::submitLoop()
                 if (std::holds_alternative<Error>(closeResult))
                     this->onError(std::move(std::get<Error>(closeResult)));
 
-                bool big = eventData->copyData->size > BIG_FILE_SIZE;
-                this->bigSmallBuff.addToBuff(big);
-                if (big)
-                    this->bigCopiesRemaining--;
-                else
-                    this->smallCopiesRemaining--;
-
+                this->etaCalulator.onCopyCompleted(eventData->copyData->size);
                 delete eventData->copyData;
             }
             else if (std::holds_alternative<Error>(runnerResult))
@@ -332,12 +326,6 @@ void CopyQueue::showProgressLoop()
     std::deque<SpeedMeasurementStartPoint> startQueue;
     startQueue.push_back(SpeedMeasurementStartPoint { Clock::now(), 0 });
 
-    constexpr uint32_t bitsetMask = 0xFF;
-    constexpr int32_t bucketCount = 8 + 1;
-
-    struct CopySpeedBucket { double bytesPerSecond = 0; size_t sampleCount = 0; };
-    CopySpeedBucket copySpeedBuckets[bucketCount] = {};
-
     bool firstShow = true;
     auto showProgress = [&]()
     {
@@ -421,66 +409,11 @@ void CopyQueue::showProgressLoop()
 
             std::string right = leftPad("", humanFriendlyFileSize(bytesPerSecond), 10) + "/s   ETA: ";
 
-            auto val = bigSmallBuff.read();
 
-            if (haveTotal && val.getCount() >= 8)
+            if (haveTotal)
             {
-                {
-                    int32_t idx = val.getBitsOnCount(bitsetMask);
-                    debug_assert(idx <= 8);
-
-                    if (copySpeedBuckets[idx].sampleCount == 0)
-                    {
-                        copySpeedBuckets[idx].bytesPerSecond = bytesPerSecond;
-                    }
-                    else
-                    {
-                        double alpha = 1.0 / 100.0;
-                        copySpeedBuckets[idx].bytesPerSecond = (1 - alpha) * copySpeedBuckets[idx].bytesPerSecond +
-                                                               alpha * bytesPerSecond;
-                    }
-                    copySpeedBuckets[idx].sampleCount++;
-                }
-
-
-                double etaBytesPerSec = -1;
-                {
-                    const size_t sampleCountThreshold = 20;
-
-                    double a = double(this->bigCopiesRemaining) / double(this->bigCopiesRemaining + this->smallCopiesRemaining);
-                    a = std::clamp(a, 0., 1.);
-                    a = a * (bucketCount-1);
-
-
-                    if (copySpeedBuckets[int(std::floor(a))].sampleCount > sampleCountThreshold &&
-                        copySpeedBuckets[int(std::ceil(a))].sampleCount > sampleCountThreshold)
-                    {
-                        double alpha = a - std::floor(a);
-                        etaBytesPerSec = copySpeedBuckets[int(std::floor(a))].bytesPerSecond * alpha +
-                                         copySpeedBuckets[int(std::ceil(a))].bytesPerSecond * (1.0 - alpha);
-                    }
-                    else
-                    {
-                        int32_t idealIndex = std::round(a);
-
-                        int32_t bestIndex = -1;
-                        int32_t bestDiff = std::numeric_limits<int32_t>::max();
-
-                        for (int32_t i = 0; i < bucketCount; i++)
-                        {
-                            int32_t thisDiff = std::abs(idealIndex - i);
-                            if (thisDiff < bestDiff && copySpeedBuckets[i].sampleCount > sampleCountThreshold)
-                            {
-                                bestDiff = thisDiff;
-                                bestIndex = i;
-                            }
-                        }
-
-                        if (bestIndex != -1)
-                            etaBytesPerSec = copySpeedBuckets[bestIndex].bytesPerSecond;
-                    }
-                }
-
+                this->etaCalulator.updateSpeedEstimate(bytesPerSecond);
+                double etaBytesPerSec = this->etaCalulator.getEta();
 
                 if (etaBytesPerSec != -1)
                 {
@@ -846,11 +779,7 @@ void CopyQueue::addCopyJobPart(QueueFileDescriptor* sourceFd,
     debug_assert(this->state == State::Running || this->state == State::Idle);
 
     this->totalBytesToCopy += size;
-
-    if (size > BIG_FILE_SIZE)
-        this->bigCopiesRemaining++;
-    else
-        this->smallCopiesRemaining++;
+    this->etaCalulator.onCopyAdded(size);
 
     pthread_mutex_lock(&this->copiesPendingStartMutex);
     {

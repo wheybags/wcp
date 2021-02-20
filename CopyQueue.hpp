@@ -8,7 +8,7 @@
 #include <filesystem>
 #include "QueueFileDescriptor.hpp"
 #include "Heap.hpp"
-#include "RollingBitset.hpp"
+#include "ETACalculator.hpp"
 
 class CopyRunner;
 
@@ -75,11 +75,8 @@ private:
     std::atomic<size_t> totalBytesCopied = 0;
     std::atomic<size_t> totalBytesFailed = 0;
 
-    static constexpr size_t BIG_FILE_SIZE = 1024 * 5;
-    std::atomic<size_t> bigCopiesRemaining = 0;
-    std::atomic<size_t> smallCopiesRemaining = 0;
 
-    RollingBitset bigSmallBuff;
+    ETACalculator etaCalulator;
 
     std::vector<std::string> errorMessages;
     pthread_mutex_t errorMessagesMutex = PTHREAD_ADAPTIVE_MUTEX_INITIALIZER_NP;
