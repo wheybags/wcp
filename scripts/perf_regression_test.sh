@@ -5,7 +5,7 @@ set -euo pipefail
 bad_arg="false"
 csv_mode="false"
 
-base_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+base_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )/.."
 default_bench_script="$base_dir/bench.sh"
 bench_script="$default_bench_script"
 

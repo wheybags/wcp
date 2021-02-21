@@ -3,7 +3,7 @@
 set -euo pipefail
 trap 'echo error!' ERR
 
-base_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+base_dir="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )/.."
 
 only_wcp="false"
 show_wcp_progress="false"
