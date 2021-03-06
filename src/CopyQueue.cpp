@@ -690,7 +690,7 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
                 }
                 else
                 {
-                    release_assert(false); // not handled yet
+                    this->onError(Error("Unhandled file type: \"" + fullPath + "\": " + std::to_string(int(type))));
                 }
             }
 
