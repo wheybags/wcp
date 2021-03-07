@@ -33,3 +33,14 @@ cp -r                               9.23s 85.15,  MiB/s, 21668.58 files/s
 
 ## How is it so fast?
 I'm using [io_uring](https://kernel.dk/io_uring.pdf), a relatively new IO / syscall system in the linux kernel. It allows you to run system calls asynchronously via a ring buffer in memory shared by user process and kernel, instead of using a full syscall with all of its overhead. I also use a lot of CPU, allocate as much RAM as I can get away with, and the implementation is 100% non-portable. Tradeoffs ;)
+
+## Build instructions
+
+```bash
+mkdir build
+cd build
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make
+```
+
+Then use `./wcp` to run
