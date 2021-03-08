@@ -20,7 +20,13 @@ size_t getPhysicalRamSize()
 
 int wcpMain(int argc, char** argv)
 {
-    release_assert(argc == 3);
+    if(argc != 3)
+    {
+        fprintf(stderr, "Usage: %s SRC DEST\n", argv[0]);
+        fputs("Supports copying files and folders.\n", stderr);
+        fputs("Contributions welcome to add better argument handling, and multiple sources!\n", stderr);
+        return 1;
+    }
     std::filesystem::path src = argv[1];
     std::filesystem::path dest = argv[2];
     release_assert(!src.empty() && !dest.empty());
