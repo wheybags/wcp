@@ -67,6 +67,9 @@ double ETACalculator::getEta()
         return etaBytesPerSec;
     };
 
+    if (this->bigCopiesRemaining == 0 && this->smallCopiesRemaining == 0)
+        return 0;
+
     double retval = calculate(20);
     if (retval == -1)
         retval = calculate(1);

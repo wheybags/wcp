@@ -470,6 +470,19 @@ public:
             release_assert(val.getBitsOnCount() == 8*7);
         }
     }
+
+    static void CopyEmptyFolder()
+    {
+        std::string base = getProjectBasePath() + "/test_data/CopyEmptyFolder";
+
+        std::filesystem::remove_all(base);
+        recursiveMkdir(base + "/a");
+        recursiveMkdir(base + "/b");
+
+        callWcpMain(base + "/a", base + "/b");
+
+        release_assert(std::filesystem::exists(base + "/b/a"));
+    }
 };
 
 TEST_LIST =
@@ -481,5 +494,6 @@ TEST_LIST =
     {"RelativeSingleFileCopy", TestContainer::RelativeSingleFileCopy},
     {"CopyLargeFolder", TestContainer::CopyLargeFolder},
     {"RollingBitset", TestContainer::UseRollingBitset},
+    {"CopyEmptyFolder", TestContainer::CopyEmptyFolder},
     {nullptr, nullptr }
 };

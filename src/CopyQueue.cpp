@@ -380,12 +380,10 @@ void CopyQueue::showProgressLoop()
             // calc ratio of big/small + use as bucket lookup
 
 
-
-            double bytesPerSecond;// = double(copied) / secondsSinceStart;
+            double bytesPerSecond = 0;
+            if (copied > 0)
             {
-                //SpeedMeasurementStart& currentStart = measurementStarts[currentMeasurement];
                 SpeedMeasurementStartPoint& currentStart = startQueue.front();
-
 
                 double secondsSinceStartX = std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::high_resolution_clock::now() - currentStart.start).count();
