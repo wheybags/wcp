@@ -1,5 +1,6 @@
 #include <sys/stat.h>
 #include <sys/resource.h>
+#include <sys/utsname.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
@@ -18,8 +19,65 @@ size_t getPhysicalRamSize()
     return size_t(pages) * size_t(pageSize);
 }
 
+struct OsVersion
+{
+    std::string osName;
+    int32_t majorVersion = -1;
+    int32_t minorVersion = -1;
+};
+
+OsVersion getOsVersion()
+{
+    utsname utsname = {};
+    uname(&utsname);
+
+    OsVersion version;
+    version.osName = utsname.sysname;
+
+    std::string acc;
+    for (int32_t i = 0; utsname.release[i] != '\0'; i++)
+    {
+        char c = utsname.release[i];
+        if (isdigit(c))
+        {
+            acc.push_back(utsname.release[i]);
+        }
+        else if (c == '.')
+        {
+            if (version.majorVersion == -1)
+            {
+                version.majorVersion = std::stoi(acc);
+            }
+            else
+            {
+                version.minorVersion = std::stoi(acc);
+                break;
+            }
+            acc.clear();
+        }
+        else
+        {
+            break;
+        }
+    }
+
+    return version;
+}
+
 int wcpMain(int argc, char** argv)
 {
+    OsVersion osVersion = getOsVersion();
+    if (osVersion.osName != "Linux")
+    {
+        fprintf(stderr, "How did you even compile this on %s?\n", osVersion.osName.c_str());
+        return 1;
+    }
+    if (osVersion.majorVersion < 5 || (osVersion.majorVersion == 5 && osVersion.minorVersion < 6))
+    {
+        fputs("Sorry, wcp requires at least Linux 5.6\n", stderr);
+        return 1;
+    }
+
     if(argc != 3)
     {
         fprintf(stderr, "Usage: %s SRC DEST\n", argv[0]);
@@ -27,6 +85,7 @@ int wcpMain(int argc, char** argv)
         fputs("Contributions welcome to add better argument handling, and multiple sources!\n", stderr);
         return 1;
     }
+
     std::filesystem::path src = argv[1];
     std::filesystem::path dest = argv[2];
     release_assert(!src.empty() && !dest.empty());
