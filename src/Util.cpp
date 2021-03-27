@@ -106,3 +106,33 @@ GetDentsResult myGetDents(int dfd, const std::string& path, void* buffer, size_t
 
     return size_t(retval);
 }
+
+ReadlinkResult myReadlink(int dfd, const std::string& linkPath)
+{
+    std::string retval;
+    retval.resize(1024);
+
+    int err = retrySyscall([&]()
+    {
+        while (true)
+        {
+            ssize_t bytes = readlinkat(dfd, linkPath.c_str(), retval.data(), retval.size());
+            if (bytes == -1)
+                return;
+
+            if (size_t(bytes) < retval.size())
+            {
+                retval[bytes] = '\0';
+                retval.resize(bytes);
+                break;
+            }
+
+            retval.resize(retval.size() + 1024);
+        }
+    });
+
+    if (err != 0)
+        return Error("Couldn't read link: \"" + linkPath + "\": \"" + strerror(err) + "\"");
+
+    return retval;
+}

@@ -56,3 +56,6 @@ using GetDentsResult = std::variant<Error, size_t>;
 [[nodiscard]] GetDentsResult myGetDents(int dfd, const std::string& path, void* buffer, size_t bufferSize);
 
 [[nodiscard]] Result myStatx(int fd, const std::string& path, int flags, unsigned int mask, struct statx& buf);
+
+using ReadlinkResult = std::variant<Error, std::string>;
+[[nodiscard]] ReadlinkResult myReadlink(int dfd, const std::string& linkPath);

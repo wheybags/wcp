@@ -20,10 +20,15 @@
 std::string getProjectBasePath()
 {
     std::string thisFile = __FILE__;
+    int32_t slashes = 0;
     for (int32_t i = int32_t(thisFile.length()) - 1; i >= 0; i--)
     {
         if (thisFile[i] == '/')
-            return thisFile.substr(0, i);
+        {
+            slashes++;
+            if (slashes == 2)
+                return thisFile.substr(0, i);
+        }
     }
 
     release_assert(false);
@@ -149,39 +154,39 @@ std::string getTestDataFolder(size_t fileSize, size_t fileCount)
     return folder;
 }
 
+std::vector<uint8_t> readWholeFileSimple(const std::string& path)
+{
+    FILE* f = fopen(path.c_str(), "rb");
+    TEST_ASSERT(f != nullptr);
+
+    TEST_ASSERT(fseek(f, 0, SEEK_END) == 0);
+    long int size = ftell(f);
+    TEST_ASSERT(size > 0);
+
+    std::vector<uint8_t> data;
+    data.resize(size);
+
+    TEST_ASSERT(fseek(f, 0, SEEK_SET) == 0);
+
+    size_t remaining = size;
+    uint8_t* ptr = data.data();
+    do
+    {
+        size_t read = fread(ptr, 1, remaining, f);
+        if (read == 0)
+            TEST_ASSERT(ferror(f) == 0);
+
+        remaining -= read;
+        ptr += read;
+    } while (remaining);
+
+    TEST_ASSERT(fclose(f) == 0);
+
+    return data;
+}
+
 void assertFilesEqual(const std::string& a, const std::string& b)
 {
-    auto readWholeFileSimple = [](const std::string& path)
-    {
-        FILE* f = fopen(path.c_str(), "rb");
-        TEST_ASSERT(f != nullptr);
-
-        TEST_ASSERT(fseek(f, SEEK_END, 0) == 0);
-        long int size = ftell(f);
-        TEST_ASSERT(size > 0);
-
-        std::vector<uint8_t> data;
-        data.resize(size);
-
-        TEST_ASSERT(fseek(f, SEEK_SET, 0) == 0);
-
-        size_t remaining = size;
-        uint8_t* ptr = data.data();
-        do
-        {
-            size_t read = fread(ptr, 1, remaining, f);
-            if (read == 0)
-                TEST_ASSERT(ferror(f) == 0);
-
-            remaining -= read;
-            ptr += read;
-        } while (remaining);
-
-        TEST_ASSERT(fclose(f) == 0);
-
-        return data;
-    };
-
     std::vector<uint8_t> aData = readWholeFileSimple(a);
     std::vector<uint8_t> bData = readWholeFileSimple(b);
 
@@ -483,6 +488,76 @@ public:
 
         release_assert(std::filesystem::exists(base + "/b/a"));
     }
+
+    static void CopySymlinkAbsolute()
+    {
+        std::string base = getProjectBasePath() + "/test_data/CopySymlinkAbsolute";
+
+        std::filesystem::remove_all(base);
+        recursiveMkdir(base + "/a");
+        recursiveMkdir(base + "/b");
+
+        release_assert(symlink("/proc/cpuinfo", (base + "/a/link").c_str()) == 0);
+
+        callWcpMain(base + "/a", base + "/b");
+
+        release_assert(std::filesystem::exists(base + "/b/a/link"));
+
+        ReadlinkResult readlinkResult = myReadlink(AT_FDCWD, base + "/b/a/link");
+        release_assert(std::holds_alternative<std::string>(readlinkResult));
+        release_assert(std::get<std::string>(readlinkResult) == "/proc/cpuinfo");
+    }
+
+    static void CopySymlinkRelative()
+    {
+        std::string base = getProjectBasePath() + "/test_data/CopySymlinkRelative";
+
+        std::filesystem::remove_all(base);
+        recursiveMkdir(base + "/a");
+        recursiveMkdir(base + "/b");
+
+        {
+            FILE *f = fopen((base + "/a/file").c_str(), "wb");
+            release_assert(f);
+            release_assert(fwrite("A", 1, 1, f) == 1);
+            release_assert(fclose(f) == 0);
+        }
+
+        release_assert(symlink("./file", (base + "/a/link").c_str()) == 0);
+
+        callWcpMain(base + "/a", base + "/b");
+
+        release_assert(std::filesystem::exists(base + "/b/a/link"));
+
+        ReadlinkResult readlinkResult = myReadlink(AT_FDCWD, base + "/b/a/link");
+        release_assert(std::holds_alternative<std::string>(readlinkResult));
+        release_assert(std::get<std::string>(readlinkResult) == "./file");
+
+        {
+            std::vector<uint8_t> linkContents = readWholeFileSimple(base + "/b/a/link");
+            release_assert(linkContents.size() == 1);
+            release_assert(linkContents[0] == 'A');
+        }
+
+        {
+            FILE *f = fopen((base + "/b/a/file").c_str(), "wb");
+            release_assert(f);
+            release_assert(fwrite("B", 1, 1, f) == 1);
+            release_assert(fclose(f) == 0);
+        }
+
+        {
+            std::vector<uint8_t> linkContents = readWholeFileSimple(base + "/b/a/link");
+            release_assert(linkContents.size() == 1);
+            release_assert(linkContents[0] == 'B');
+        }
+
+        {
+            std::vector<uint8_t> linkContents = readWholeFileSimple(base + "/a/link");
+            release_assert(linkContents.size() == 1);
+            release_assert(linkContents[0] == 'A');
+        }
+    }
 };
 
 TEST_LIST =
@@ -495,5 +570,7 @@ TEST_LIST =
     {"CopyLargeFolder", TestContainer::CopyLargeFolder},
     {"RollingBitset", TestContainer::UseRollingBitset},
     {"CopyEmptyFolder", TestContainer::CopyEmptyFolder},
+    {"CopySymlinkAbsolute", TestContainer::CopySymlinkAbsolute},
+    {"CopySymlinkRelative", TestContainer::CopySymlinkRelative},
     {nullptr, nullptr }
 };

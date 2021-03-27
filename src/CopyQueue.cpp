@@ -686,6 +686,25 @@ void CopyQueue::addRecursiveCopy(std::string from, std::string dest)
 
                     this->addCopyJob(fullPath, destPath, sb);
                 }
+                else if (type == DT_LNK)
+                {
+                    ReadlinkResult result = myReadlink(AT_FDCWD, fullPath);
+                    if (std::holds_alternative<Error>(result))
+                    {
+                        this->onError(std::move(std::get<Error>(result)));
+                        continue;
+                    }
+
+                    std::string& linkDest = std::get<std::string>(result);
+
+                    int error = retrySyscall([&]()
+                    {
+                        symlink(linkDest.c_str(), destPath.c_str());
+                    });
+
+                    if (error != 0)
+                        this->onError(Error("Error copying symlink: \"" + fullPath + "\""));
+                }
                 else
                 {
                     this->onError(Error("Unhandled file type: \"" + fullPath + "\": " + std::to_string(int(type))));
