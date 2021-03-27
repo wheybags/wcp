@@ -144,7 +144,7 @@ Result CopyRunner::submitReadWriteCommands()
         io_uring_prep_read(sqe, this->sourceFd->getFd(), this->bufferAligned + this->readOffset - this->offset, bytesToRead, this->readOffset);
         sqe->flags |= IOSQE_IO_LINK; // The following write command will fail with ECANCELLED if this read doesn't fully complete
 
-        static_assert(sizeof(sqe->user_data) == sizeof(void*));
+        static_assert(sizeof(sqe->user_data) >= sizeof(void*));
         sqe->user_data = reinterpret_cast<__u64>(&this->eventDataBuffers[0]);
 
         if (Config::DEBUG_FORCE_PARTIAL_READS)
