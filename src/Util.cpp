@@ -4,7 +4,7 @@
 #include <sys/stat.h>
 #include <cstring>
 #include <unistd.h>
-#include <dirent.h>
+#include <syscall.h>
 
 void recursiveMkdir(std::string& path)
 {
@@ -98,7 +98,7 @@ GetDentsResult myGetDents(int dfd, const std::string& path, void* buffer, size_t
     ssize_t retval = 0;
     int err = retrySyscall([&]()
     {
-        retval = getdents64(dfd, buffer, bufferSize);
+        retval = syscall(SYS_getdents64, dfd, buffer, bufferSize);
     });
 
     if (err != 0)
