@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <optional>
 #include <sys/types.h>
 #include <asm/types.h>
 #include <functional>
